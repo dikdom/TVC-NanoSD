@@ -1,0 +1,336 @@
+DEBUG       EQU     0 
+EXPORTTOROM EQU     1
+
+
+BUILDVER    EQU     "0.33" 
+
+; TODO
+; ====
+; - Enter to Menu from CLI? - Will NOT be implemented
+; - functions getting just input shall return an early response - to detect no SD available
+; - remove debug codes from release env
+;   - dummy dir list and their helper methods
+;   - blkint A,BC,DE printout
+; - Check if * in opening filename works - NO
+; KNOWN BUGS
+; - Setting SPI speed on Nano to FULL from HALF causes SD read to slow down..
+; - New card, root directory -> no / printed at pwd box, .. is present (fixed in Nano?)
+; 1.00
+; - release version as of 2021-01-27, obsolete!
+
+; 0.33 2021-06-10
+; - setting bit0 to 1 of 0B4Fh (BORDER COLOR) causes CHRIN and BKIN
+;   would not stripe the borders. +140ms load time for a 45kB file (in any way)
+; 0.32 2021-05-03
+; - fix on VER at last line of screen, 
+; 0.31
+; - fix for no SD 
+; 0.30
+; - minor enhancements, fix in Nano fw
+; 0.29
+; - SD library in Nano: getting each file iterates through the complete 
+;   directory from the first element. In case of large dir (>100) this slows 
+;   down the directory load. In case of >200 this is 4-5 files/sec.
+;   FIXED in NanoSD fw v0.29
+; - Print 'Press ESC to enter MENU' in case of skip-menu configured
+; - CLI cmd VER prints the Nano fw version also
+; - Header strings changes slightly
+; - Exit from CLI with ESC also
+; 0.28
+; - DIR /W prints directories inside [] 's
+; - Relocated the char buffer for load, sndmx card uses $2000 area and it 
+;   conflicts with NanoSD
+; - DIRNEXT routine checks bit 7. Set bit 7 means normal DIRNEXT, cleared bit 7
+;   means stop directory iteration
+; * VERIFY implemented
+; 0.27
+; - Available data in opened file always determined by the size of file (on Nano FW)
+; - reading over the file caused erratical behaviour, fixed
+; - directory sort is maintained between dir changes/reboots
+; - ^ in front of NAME or SIZE when list is sorted in menu
+; - auto sense of card remove/re-insert is missing
+; - File not found print fixed
+; - CLI uses C' instead of H' (AF', C' and DE' is usable in EXT and USR)
+; 0.26
+; - DIR /W and CLS implemented 
+; - handling CTRL-ESC during dir in CLI
+; - reset during menu (soft reset is executing...)
+; - mkdir, rmdir, del fixed
+; - SNDMX generated .CAS files fixed
+; - sorting to be implemented. When file list is sorted
+;   - directory names always come first
+;   - directories always sorted by names
+;   - file sort state is also to be stored on Nano (done)
+; 0.25
+; - fixed long directory name print
+; - boot status save fixed
+;   - config param refactored in Nano firmware
+; - moving selection in menu sped up
+; - directory list store is redesigned, easier to sort
+; 0.24
+; - Directory entry counter is printed during directory load
+; - 16 bit decimal print now prints 0
+; - TODO
+;  - sort to be implemented/saved in EEPROM
+;  - reset during MENU causes soft reset: exit, no EXT0 installed
+; 0.23
+; - new TVC/CLI functions: mkdir, rmdir, del
+; - directory and path listing fixed, menu works
+; - dir functions fixed
+; - SAVE works
+; - ESC on boot works
+; 0.22
+; - keyboard handling in menu
+; - ESC works, up/dn, pg up/dn, CD works, LOAD works
+; - interrupt routine rewritted for LOAD (keyboard buffer fill is done
+;   from the ISR routine)
+; - TODO:
+;   - test menu with real HW
+;   - SAVE still not tested
+;   - sorting needs to be rethink and implement
+;   - extending CLI with mkdir, del, rmdir
+; 0.20
+; - fixed blkio out
+; - Introducing Menu
+; 0.19
+; - CLI keyboard input buffer is located in the cassette outbuffer
+; - BLKOUT routine fixed, HL is not ruined during the write cycle,
+;   BC, DE is stored on stack
+;   OUTPUT:
+;   - on failure BC is set to the num of remaining bytes, otherwise it is
+;     the original value
+;   - DE is the original value
+;   - A 0x00 on success, otherwise an error code
+; 0.18
+; - file size is sent back as 4 bytes
+; - dirfirst and dirnext functions implemented
+; - pwd function implemented
+; - filenames refactored to have "func" in functions files
+; - new function in Nano: menu status in EEPROM
+; - DIRFIRST, DIRNEXT, PWD, CD functions are API documented in the source file's
+;   header
+; 0.17
+; - CAS file definition:
+;   - has .cas extension
+;   - first byte is either 0x11 or 0x01
+; - open/create use this as definition
+
+            IF      EXPORTTOROM = 1 ; use in real W27C512 EEPROM
+            .BINFROM $0000 
+            .BINTO  $10000 
+            ELSE     ; use in winTVC
+            .BINFROM $C000 
+            .BINTO  $E000 
+            ENDIF    
+
+
+            .ENT    INIT 
+            .ORG    $0000 
+            FILL    $FF,$10000 
+
+; **********************************************************
+; *** Between any OUT and IN at least 32T time must pass ***
+; **********************************************************
+
+
+; CAS_CHIN D1               0b11010001
+; CAS_CHOUT 51              0b01010001
+; CAS_BKIN D2               0b11010010
+; CAS_BKOUT 52              0b01010010
+; CAS_OPEN D3               0b11010011
+; CAS_CRTE 53               0b01010011
+; CAS_CLOSE D4 (for read)   0b11010100
+; CAS_CLOSE 54 (for write)  0b01010100
+; CAS_VERIFY D5             0b11010101
+
+RETVAL_OK   EQU     0x00 
+RETVAL_OPEN_OK EQU  0x01 
+RETVAL_DATA_NOT_READY_YET EQU 0x80 
+RETVAL_WAITING_FOR_INPUT EQU 0x81 
+RETVAL_FILE_NOT_FOUND EQU 0x82 
+RETVAL_END_OF_FILE EQU 0x83 
+RETVAL_END_OF_LIST EQU 0x84 
+RETVAL_FILE_NOT_OPEN EQU 0x85 
+RETVAL_CARD_NOT_READY EQU 0x86 
+RETVAL_READ_OUT_OF_SYNC EQU 0x87 
+RETVAL_BUFFER_OVERRUN EQU 0x88 
+RETVAL_BUFFER_UNDERRUN EQU 0x89 
+RETVAL_CLOSE_OK EQU 0x8a 
+RETVAL_CLOSE_FAILED EQU 0x8b 
+RETVAL_CHDIR_OK EQU 0x8c 
+RETVAL_CHDIR_FAILED EQU 0x8d 
+RETVAL_BANK_SELECT_DONE EQU 0x8e 
+RETVAL_CREATE_OK EQU 0x8f 
+RETVAL_CREATE_FAILED EQU 0x90 
+RETVAL_DATA_RECEIVED EQU 0x91 
+RETVAL_DATA_FAILED_TO_RECEIVE EQU 0x92 
+RETVAL_MKDIR_OK EQU 0x93 
+RETVAL_MKDIR_FAILED EQU 0x94 
+RETVAL_RMDIR_OK EQU 0x95 
+RETVAL_RMDIR_FAILED EQU 0x96 
+RETVAL_DELETE_OK EQU 0x97 
+RETVAL_DELETE_FAILED EQU 0x98 
+RETVAL_INVALID_PARAMETER_ID EQU 0x99 
+RETVAL_PARAMETER_SET EQU 0x9A 
+
+CAS_IN_HW_REDIRECT_ADDR EQU $0B05 
+CAS_OUT_HW_REDIRECT_ADDR EQU $0B0D 
+
+OPEN_FOR_READ_FILE_TYPE EQU $0BF3 ; 0x00 no open file, 0x01 buffered, 0x11 unbuffered
+OPEN_FOR_WRITE_FILE_TYPE EQU $0D14 ; 0x00 no open file, 0x01 buffered, 0x11 unbuffered
+
+VERIFY_ONGOING EQU  $0BF1 
+AVAILABLE_FOR_GET EQU $0BF4 
+REMAINING_BYTES EQU $0D05 
+BUFFER      EQU     $0B6B ; 00: non-buffered, otherwise: buffered
+END_OF_FILE EQU     $0B6E 
+BORDER_COLOR EQU    $0B4F 
+INK_COLOR   EQU     $0B4D 
+PAPER_COLOR EQU     $0B4E 
+PORT02_SHADOW EQU   $0003 
+PORT03_SHADOW EQU   $0B11 
+PICTURE     EQU     $0B51 
+
+
+
+; 
+;   OPEN = 0, // Open a file. Parameter is a null terminated string. Returns 0: ok
+;   CLOSE,   // Closes the open file. Returns OK
+;   CHDIR,   // Change dir. Parameter is a null terminated string. Returns 0:ok, 1:FILE_NOT_FOUND
+;   LIST,    // Gets the list of files in the current directory (fName, type, size)
+;   ACK_LIST, //
+;   GETDATA,   // Returns OK, then [num of bytes to return (GETDATA_SIZE)]. After num of bytes read TVC must send ACK_GETDATA;
+;   FINFO,   // Returns the file info. Param: null terminated file name.
+;   GETCDIR  // Returns the current path: length of string + string
+;   NONE = 255
+; 
+
+SDISK_NANO_CMD_OPEN_RO EQU 0x00 
+SDISK_NANO_CMD_CLOSE_RO EQU 0x01 
+SDISK_NANO_CMD_CHDIR EQU 0x02 
+SDISK_NANO_CMD_LIST EQU 0x03 
+SDISK_NANO_CMD_ACKLIST EQU 0x04 
+SDISK_NANO_CMD_GETDATA EQU 0x05 
+SDISK_NANO_CMD_GETCDIR EQU 0x07 
+SDISK_NANO_CMD_BANKTO0 EQU 0x08 
+SDISK_NANO_CMD_BANKTO1 EQU 0x09 
+SDISK_NANO_CMD_CREATE EQU 0x0A 
+SDISK_NANO_CMD_PUTDATA EQU 0x0B 
+SDISK_NANO_CMD_CLOSEWRITE EQU 0x0C 
+SDISK_NANO_CMD_GETPARAMETER EQU 0x0D 
+SDISK_NANO_CMD_SETPARAMETER EQU 0x0E 
+SDISK_NANO_CMD_MKDIR EQU 0x0F 
+SDISK_NANO_CMD_RMDIR EQU 0x10 
+SDISK_NANO_CMD_DELETE EQU 0x11 
+
+
+NUM_OF_FUNCTIONS EQU 14 
+F_ISR       EQU     0 
+F_CHIO      EQU     1
+F_CHOUT     EQU     $51
+F_CHIN      EQU     $D1
+F_BLKIO     EQU     2
+F_BLKOUT    EQU     $52
+F_BLKIN     EQU     $D2
+F_OPEN      EQU     3
+F_CREATE    EQU     $53
+F_OPENF     EQU     $D3
+F_CLOSE     EQU     4 
+F_VERIFY    EQU     5 
+F_PWD       EQU     6 
+F_DIRFIRST  EQU     $D7
+F_DIRNEXT   EQU     $D8
+F_CHDIR     EQU     9 
+F_MKDIR     EQU     10 
+F_RMDIR     EQU     11 
+F_DELETE    EQU     12 
+F_PARAM     EQU     13
+F_SETPARAM  EQU     $5D
+F_GETPARAM  EQU     $DD
+
+
+F_VIDMODE   EQU     $04 
+F_EDCHOUT   EQU     $21 
+F_EDBLKOUT  EQU     $22 
+F_EDCPOS    EQU     $23
+
+PARAM_MENUONBOOT EQU $00
+PARAM_SORTORDER  EQU $01
+; read-only, live parameter! A hack, on the nano
+; flash read (for checking ID) happens, and so on...
+; not a cheap operation, occurs in every 3 secs.
+PARAM_SDAVAILABLE EQU $02
+; read-only, returns the firmware version of the
+; Arduino Nano code. Same flash read as above
+PARAM_GET_FW_VERSION EQU $03
+
+
+            .ORG    $C000 
+            DB      "MOPS" 
+CARD_SHORT_NAME_LENGTH:  
+            DB      6 
+CARD_SHORT_NAME:     
+            DB      "NANOSD" 
+            .ORG    $C00B 
+            DW      INIT 
+            DB      NUM_OF_FUNCTIONS 
+            DW      INTERRUPT_HANDLER_EXIT  ;  0 
+            DW      CHARIO_HANDLER          ;  1
+            DW      BLOCKIO_HANDLER         ;  2
+            DW      OPEN_HANDLER            ;  3
+            DW      CLOSE_HANDLER           ;  4
+            DW      VERIFY_HANDLER          ;  5
+            DW      PWD_HANDLER             ;  6
+            DW      DIRFIRST_HANDLER        ;  7
+            DW      DIRNEXT_HANDLER         ;  8
+            DW      CHDIR_HANDLER           ;  9
+            DW      MKDIR_HANDLER           ; 10
+            DW      RMDIR_HANDLER           ; 11
+            DW      DELETE_HANDLER          ; 12
+            DW      PARAM_HANDLER           ; 13
+
+            .ORG    $C040 
+
+            .INCLUDE "NanoSDROM_INIT.z80" 
+
+            .INCLUDE "NanoSDROM_MENU.z80" 
+
+            .INCLUDE "NanoSDROM_CLI.z80" 
+
+            .INCLUDE "NanoSDROM_ISR.z80" 
+
+            .INCLUDE "NanoSDROM_func_chrio.z80" 
+            .INCLUDE "NanoSDROM_func_blkio.z80" 
+            .INCLUDE "NanoSDROM_func_open.z80" 
+            .INCLUDE "NanoSDROM_func_close.z80"
+            .INCLUDE "NanoSDROM_func_verify.z80"
+            .INCLUDE "NanoSDROM_func_pwd.z80" 
+            .INCLUDE "NanoSDROM_func_dir.z80" 
+            .INCLUDE "NanoSDROM_func_cd.z80" 
+            .INCLUDE "NanoSDROM_func_mkdir.z80" 
+            .INCLUDE "NanoSDROM_func_rmdir.z80" 
+            .INCLUDE "NanoSDROM_func_delete.z80" 
+            .INCLUDE "NanoSDROM_func_param.z80" 
+
+            .INCLUDE "NanoSDROM_tools.z80" 
+
+; FUNCTION_NOT_IMPLEMENTED_STR:  
+;             .PSTR   "NanoSD Function not implemented - " 
+SDISK_VERSION_STR:   
+            .PSTR   "NanoSD IO Card present, ROM v" || BUILDVER 
+SDISK_BYSANYI_STR:   
+            .PSTR   "by Sanyi, 2021"
+PRESS_ESC_STR:
+            .PSTR   "Press ESC to enter file-select menu!"
+; BUILD_VER_STR:
+;             .PSTR   BUILDVER
+FUNCTION_BLOCKOUT_STR:  
+            .PSTR   "BLKOUT" 
+            .ORG    $2000 
+            .CSTR   "/2345/78901234/67890/" 
+
+
+
+
+
+

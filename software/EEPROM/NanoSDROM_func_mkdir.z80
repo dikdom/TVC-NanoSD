@@ -1,0 +1,44 @@
+; INPUT:
+; - DE: points a null terminated string to a directory name to create
+; OUTPUT
+; - C:
+;    - $00: OK
+;    - $F1: Cannot create directory
+;    - $F2: timeout during communicating with Nano
+
+MKDIR_HANDLER:       
+            .BLOCK  mkdir 
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_MKDIR 
+            OUT     (C),A ; MKDIR command sent
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop the first response
+PATH_SEND_LOOP:      
+            CALL    WAIT_100us 
+            LD      A,(DE) 
+            OUT     (C),A 
+            OR      A 
+            JR      z,SEND_PATH_CLOSE 
+            INC     DE 
+            JR      PATH_SEND_LOOP 
+SEND_PATH_CLOSE:     
+            LD      DE,5000 
+WAIT_FOR_MKDIR_RESPONSE:  
+            CALL    WAIT_1ms 
+            IN      A,(C) 
+            CP      RETVAL_MKDIR_OK 
+            LD      b,$00 
+            JR      z,MKDIR_EXIT 
+            CP      RETVAL_MKDIR_FAILED 
+            LD      b,$F1 
+            JR      z,MKDIR_EXIT 
+            DEC     DE 
+            LD      A,D 
+            OR      E 
+            JR      nz,WAIT_FOR_MKDIR_RESPONSE 
+            LD      B,$F2 
+MKDIR_EXIT:          
+            LD      A,B
+            RET      
+            .ENDBLOCK  
+

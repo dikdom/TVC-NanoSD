@@ -1,0 +1,536 @@
+CHINPUT_BUFFER EQU  0x0D26 ; cassette output buffer
+
+COMMAND_RECS:        
+            DW      CMD_HELP 
+            DB      "HELP",$00,$FF 
+            DW      CMD_DIRWIDE 
+            DB      "DIR /W",$00 ; 9 bytes long record
+            DB      $FF,$FF,$00,$ff,$ff,$ff,$ff ; 7 bytes long fake record
+            DW      CMD_DIR 
+            DB      "DIR",$00,$FF,$FF 
+            DW      CMD_CD 
+            DB      "CD",$00,$FF,$FF,$FF 
+            DW      CMD_PWD 
+            DB      "PWD",$00,$FF,$FF 
+            DW      CMD_EXIT 
+            DB      "EXIT",$00,$FF 
+            DW      CMD_MKDIR 
+            DB      "MKDIR",$00 
+            DW      CMD_RMDIR 
+            DB      "RMDIR",$00 
+            DW      CMD_DEL 
+            DB      "DEL",$00,$FF,$FF 
+            DW      CMD_VER 
+            DB      "VER",$00,$FF,$FF 
+            DW      CMD_CLS 
+            DB      "CLS",$00,$FF,$FF 
+
+            DW      CMD_EXIT 
+            DB      "X",$00,$FF,$FF,$FF,$FF 
+            DW      CMD_HELP 
+            DB      "H",$00,$FF,$FF,$FF,$FF 
+            DB      $00,$00 
+
+HELP_CSTR:           
+            DB      "Available cmds:\r\n" 
+            DB      " - HELP: prints the available commands (shortcut: H)\r\n" 
+            DB      " - DIR [/w]: lists the directories and files in the current\r\n" 
+            DB      "   directory. DIR /W prints condensed directory list\r\n" 
+            DB      " - CD [dir]: prints the current directory or changes into\r\n" 
+            DB      "   the given 'dir' directory\r\n" 
+            DB      " - PWD: prints the current directory (shortcut: CD)\r\n" 
+            DB      " - MKDIR <dir>: creates a new directory\r\n" 
+            DB      " - RMDIR <dir>: removes an empty directory\r\n" 
+            DB      " - DEL <file>: deletes a file\r\n" 
+            DB      " - VER: prints the version of the NanoSD firmware\r\n" 
+            DB      " - CLS: clears screen\r\n" 
+            DB      " - EXIT: leaves the CLI of the Nano SD IO card \r\n" 
+            .CSTR   "   (shortcut: X)\r\n" 
+
+; IN params
+; A - latest PORT03
+; B - orig PORT03
+; C - IO CARD RAM in U0
+; OUT params
+; C - must contain $03
+; B - must contain the original PORT03_SHADOW value
+; A - must contain the original PORT02_SHADOW value
+CLI_MAIN:            
+            PUSH    IX 
+            LD      (PORT03_SHADOW),a 
+            XOR     a 
+            LD      h,a 
+            LD      l,c 
+            PUSH    hl 
+            POP     ix ; IX contains memory CARD's base memory in U0
+            LD      a,(PORT02_SHADOW) 
+            LD      c,a 
+            PUSH    bc ; BC - original PORT03/PORT2 shadow regs
+            LD      a,$f0 
+            LD      (PORT02_SHADOW),a 
+            EI       
+
+            LD      hl,CLI_HDR_STR 
+            CALL    PRINT_STRING 
+            LD      hl,CLI_THELP_STR 
+            CALL    PRINT_STRING 
+            CALL    CLI_LOOP 
+
+            POP     BC 
+            DI       
+            LD      A,B 
+            LD      (PORT03_SHADOW),A 
+            LD      A,C 
+            LD      C,$03 
+
+            POP     IX 
+            RET      
+
+CLI_LOOP:            
+            LD      HL,PROMPT_STR 
+            CALL    PRINT_STRING 
+            RST     $30 
+            DB      $24 ; ED-CFIX
+CHAR_READ:           
+            RST     $30 
+            DB      $A1 ; ED-CHIN
+            LD      A,C 
+            CP      $0D 
+            JR      z,CLI_LOOP 
+            CP      $20 
+            JR      z,CHAR_READ 
+            CP      $1B ; Exit on ESC
+            JP      z,CMD_ESC 
+            LD      HL,CHINPUT_BUFFER 
+            LD      (HL),A 
+            INC     HL
+LINE_READ_LOOP:      
+            RST     $30 
+            DB      $A1 
+            LD      a,c 
+            CP      $0D 
+            JR      z,LINE_DONE 
+            LD      (hl),a 
+            INC     hl 
+            LD      a,l 
+            CP      $26+$30 ; $0D26 -> $0D56
+            JR      nz,LINE_READ_LOOP 
+LINE_DONE:           
+            XOR     a 
+            LD      (hl),a 
+            LD      hl,COMMAND_RECS 
+            LD      de,CHINPUT_BUFFER 
+            PUSH    hl 
+            INC     hl 
+            INC     hl 
+CMD_CHECK_LOOP:      
+            LD      A,(HL) 
+            CP      $00 
+            JR      z,COMMAND_FOUND 
+            LD      A,(DE) 
+            CP      $00 
+            JR      z,CHECK_NEXT_CMD 
+            CP      $60 
+            JR      c,UPPER_CASE 
+            AND     11011111B 
+UPPER_CASE:          
+            CP      (hl) 
+            JR      nz,CHECK_NEXT_CMD 
+            INC     hl 
+            INC     de 
+            JR      CMD_CHECK_LOOP 
+CHECK_NEXT_CMD:      
+            POP     hl 
+            LD      de,$0008 
+            ADD     hl,de 
+            PUSH    hl 
+            LD      a,(hl) 
+            INC     hl 
+            OR      (hl) 
+            JR      z,COMMAND_NOT_FOUND 
+            INC     hl 
+            LD      de,CHINPUT_BUFFER 
+            JR      CMD_CHECK_LOOP 
+COMMAND_FOUND:       
+            POP     hl 
+            PUSH    DE 
+            LD      e,(hl) 
+            INC     hl 
+            LD      d,(hl) 
+            EX      de,hl 
+            POP     DE 
+            JP      (hl) 
+COMMAND_NOT_FOUND:   
+            POP     hl 
+            LD      hl,COMMAND_NOT_FOUND_STR 
+            CALL    PRINT_STRING 
+            JP      CLI_LOOP 
+
+CMD_HELP:            
+            LD      HL,HELP_CSTR 
+            CALL    PRINT_CSTRING 
+            JR      CLI_LOOP 
+CMD_DIRWIDE:         
+            EXX      ; C' can be safely used in an EXT function
+            LD      C,0 
+            EXX      
+            JR      AFTER_WIDENESS 
+CMD_DIR:             
+            EXX      
+            LD      C,1 
+            EXX      
+AFTER_WIDENESS:      
+            LD      DE,CHINPUT_BUFFER 
+            RST     $30 
+            DB      F_DIRFIRST 
+DIR_REPLY_LOOP:      
+            OR      A 
+            JR      z,PROCESS_ONE_DIR_REC 
+            CP      1 
+            JP      z,DIR_READ_DONE 
+            LD      HL,DIR_READ_FAILURE_STR 
+            CALL    PRINT_STRING 
+            CALL    PRINT_HEX_BYTE 
+            CALL    PRINT_NEWLINE 
+            JP      CLI_LOOP 
+PROCESS_ONE_DIR_REC:  
+            CALL    IS_IT_WIDE_DIR ; z is set if yes
+            JR      nz,skip_open_brace 
+            LD      A,(CHINPUT_BUFFER+12) 
+            OR      A 
+            JR      nz,skip_open_brace ; not a directory
+            LD      C,"[" 
+            RST     $30 
+            DB      F_EDCHOUT 
+SKIP_OPEN_BRACE:     
+            LD      B,12 
+            LD      HL,CHINPUT_BUFFER 
+DIR_ENTRY_NAME_LOOP:  
+            LD      A,(HL) 
+            CP      $20 ; this is padding, SPC is not allowed in 8.3 filenames
+            JR      z,SPACE_FOUND 
+            PUSH    BC 
+            CALL    PRINT_CHAR 
+            POP     BC 
+            INC     HL 
+            DJNZ    DIR_ENTRY_NAME_LOOP 
+SPACE_FOUND:         
+            PUSH    BC 
+            CALL    IS_IT_WIDE_DIR ; z is set if yes
+            JR      nz,skip_close_brace 
+            LD      a,(CHINPUT_BUFFER+12) 
+            OR      A 
+            JR      nz,skip_close_brace ; it is a file
+            LD      c,"]" 
+            RST     $30 
+            DB      F_EDCHOUT 
+SKIP_CLOSE_BRACE:    
+            POP     BC 
+            XOR     a 
+            CP      b 
+            JR      z,FULLY_PRINTED 
+            LD      c,$20 
+RIGHT_PAD:           
+            PUSH    bc 
+            RST     $30 
+            DB      F_EDCHOUT 
+            POP     bc 
+            DJNZ    RIGHT_PAD 
+FULLY_PRINTED:       
+            LD      C,09 
+            RST     $30 
+            DB      F_EDCHOUT 
+            CALL    IS_IT_WIDE_DIR ; z is set if yes
+            JR      z,END_OF_DIR_ENTRY_NO_NL 
+            LD      A,(CHINPUT_BUFFER+12) 
+            OR      A 
+            JR      nz,FILE_TYPE 
+            LD      hl,TYPE_DIR_STR 
+            CALL    PRINT_STRING 
+            JR      END_OF_DIR_ENTRY 
+FILE_TYPE:           
+            LD      HL,(CHINPUT_BUFFER+15) 
+            LD      A,L 
+            OR      H 
+            JR      nz,LARGE_FILE 
+NORMAL_SIZED_FILE:   
+            LD      HL,(CHINPUT_BUFFER+13) 
+            CALL    PRINT_16BIT_DECIMAL_NUMBER 
+            JR      END_OF_DIR_ENTRY 
+LARGE_FILE:          
+            LD      HL,LARGE_SIZE_STR 
+            CALL    PRINT_STRING 
+END_OF_DIR_ENTRY:    
+            CALL    PRINT_NEWLINE 
+END_OF_DIR_ENTRY_NO_NL:  
+            LD      A,($0B16) ; check CTRL-ESC
+            CP      $FF 
+            JR      nz,KEEP_ON_READING 
+            CALL    IS_IT_WIDE_DIR 
+            CALL    z,PRINT_NEWLINE 
+            XOR     A 
+            LD      ($0B16),A 
+            LD      ($0BE5),A 
+            LD      HL,DIR_BROKE_STR 
+            CALL    PRINT_STRING 
+            XOR     A 
+            RST     $30 
+            DB      F_DIRNEXT - $80 ; breaks the iteration
+            JP      CLI_LOOP 
+KEEP_ON_READING:     
+; Check if CTRL is down
+            LD      a,($0BE8) 
+            CP      $04 
+            JR      nz,SKIP_CTRL_PRESS_WAIT 
+            LD      HL,500 
+CTRL_WAIT_LOOP:      
+            CALL    wait_1ms 
+            DEC     HL 
+            LD      A,L 
+            OR      H 
+            JR      nz,CTRL_WAIT_LOOP 
+SKIP_CTRL_PRESS_WAIT:  
+            LD      DE,CHINPUT_BUFFER 
+            RST     $30 
+            DB      F_DIRNEXT 
+            JP      DIR_REPLY_LOOP 
+
+DIR_READ_DONE:       
+            CALL    IS_IT_WIDE_DIR 
+            CALL    z,PRINT_NEWLINE 
+            JP      CLI_LOOP 
+
+CMD_CD:              
+            LD      a,(DE) 
+            CP      $20 
+            JR      z,CD_PARAM 
+CMD_PWD:             
+            LD      C,(IX+0) 
+            LD      a,SDISK_NANO_CMD_GETCDIR 
+            OUT     (C),A 
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop the first response
+CDIR_LOOP:           
+            CALL    WAIT_100us 
+            IN      A,(C) 
+            JP      p,CDIR_READY ; 10T
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,CDIR_LOOP 
+            JP      IO_ERROR 
+CDIR_READY:          
+            LD      b,a ; 4T
+CDIR_READ_LOOP:      
+            CALL    WAIT_27T 
+            PUSH    BC 
+            IN      A,(C) 
+            CALL    PRINT_CHAR 
+            POP     BC 
+            DJNZ    CDIR_READ_LOOP 
+            CALL    PRINT_NEWLINE 
+            JP      CLI_LOOP 
+CD_PARAM:            
+            INC     DE 
+            LD      A,(DE) 
+            CP      $20 
+            JR      z,CD_PARAM 
+            CP      $00 
+            JR      z,CMD_CD ; end of paramstr reached, no param found
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_CHDIR 
+            OUT     (C),A ; CDIR command sent
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop the first response
+PATH_SEND_LOOP:      
+            CALL    WAIT_100us 
+            LD      A,(DE) 
+            OUT     (C),A 
+            OR      A 
+            JR      z,SEND_PATH_CLOSE 
+            INC     DE 
+            JR      PATH_SEND_LOOP 
+SEND_PATH_CLOSE:     
+            LD      DE,500 
+WAIT_FOR_CD_RESPONSE:  
+            CALL    WAIT_1ms 
+            IN      A,(C) 
+            CP      RETVAL_CHDIR_OK 
+            LD      HL,CD_OK_STR 
+            JR      z,CD_EXIT 
+            CP      RETVAL_CHDIR_FAILED 
+            LD      HL,CD_NOK_STR 
+            JR      z,CD_EXIT 
+            DEC     DE 
+            LD      A,D 
+            OR      E 
+
+            JR      nz,WAIT_FOR_CD_RESPONSE 
+            LD      HL,TIMEOUT_STR 
+CD_EXIT:             
+            CALL    PRINT_STRING 
+            JP      CLI_LOOP 
+
+CMD_ESC:             
+            XOR     A 
+            LD      ($0B16),A 
+            LD      ($0BE5),A 
+            CALL    PRINT_NEWLINE
+CMD_EXIT:            
+            RET      
+
+CMD_MKDIR:           
+            LD      a,(DE) 
+            CP      $20 
+            JP      nz,MISSING_PARAM 
+            INC     de 
+            LD      a,(DE) 
+            OR      a 
+            JP      z,MISSING_PARAM 
+            RST     $30 
+            DB      F_MKDIR+$50 
+            LD      HL,MKDIR_OK_STR 
+            OR      A 
+            JR      z,MKDIR_DONE 
+            CP      $F1 
+            LD      HL,MKDIR_NOK_STR 
+            JR      z,MKDIR_DONE 
+            LD      HL,TIMEOUT_STR 
+MKDIR_DONE:          
+            CALL    PRINT_STRING 
+            JP      CLI_LOOP 
+CMD_RMDIR:           
+            LD      a,(DE) 
+            CP      $20 
+            JP      nz,MISSING_PARAM 
+            INC     de 
+            LD      a,(DE) 
+            OR      a 
+            JP      z,MISSING_PARAM 
+            RST     $30 
+            DB      F_RMDIR+$50 
+            LD      HL,RMDIR_OK_STR 
+            OR      A 
+            JR      z,RMDIR_DONE 
+            CP      $F1 
+            LD      HL,RMDIR_NOK_STR 
+            JR      z,RMDIR_DONE 
+            LD      HL,TIMEOUT_STR 
+RMDIR_DONE:          
+            CALL    PRINT_STRING 
+            JP      CLI_LOOP 
+
+CMD_DEL:             
+            LD      a,(DE) 
+            CP      $20 
+            JP      nz,MISSING_PARAM 
+            INC     de 
+            LD      a,(DE) 
+            OR      a 
+            JP      z,MISSING_PARAM 
+            RST     $30 
+            DB      F_DELETE+$50 
+            LD      HL,DELETE_OK_STR 
+            OR      A 
+            JR      z,DELETE_DONE 
+            LD      HL,DELETE_NOK_STR 
+            CP      $F1 
+            JR      z,DELETE_DONE 
+            LD      HL,TIMEOUT_STR 
+DELETE_DONE:         
+            CALL    PRINT_STRING 
+            JP      CLI_LOOP 
+
+MISSING_PARAM:       
+            LD      HL,MISSING_PARAM_STR 
+            CALL    PRINT_STRING 
+            JP      CLI_LOOP 
+
+CMD_VER:             
+            LD      HL,CLI_VER_STR 
+            CALL    PRINT_STRING
+            ld      DE,CHINPUT_BUFFER
+            LD      C,3 
+            RST     $30 
+            DB      F_GETPARAM 
+            CP      A 
+            JP      nz,VER_DONE 
+            EX      DE,HL 
+            CALL    PRINT_CSTRING 
+            CALL    PRINT_NEWLINE 
+VER_DONE:            
+            JP      CLI_LOOP 
+CMD_CLS:             
+            RST     $30 
+            DB      $05 
+            LD      BC,$0101 
+            RST     $30 
+            DB      F_EDCPOS 
+            JP      CLI_LOOP 
+
+IO_ERROR:            
+            PUSH    AF 
+            LD      HL,IO_ERROR_STR 
+            CALL    PRINT_STRING 
+            POP     AF 
+            CALL    PRINT_HEX_BYTE 
+            LD      A,"h" 
+            CALL    PRINT_CHAR 
+            CALL    PRINT_NEWLINE 
+            JP      CLI_LOOP 
+
+IS_IT_WIDE_DIR:      ; z is set if yes
+            EXX      
+            LD      A,C 
+            OR      A 
+            EXX      
+            RET      
+
+CLI_HDR_STR:         
+            .PSTR   "** NanoSD IO Card - CLI **\r\n" 
+
+CLI_VER_STR:         
+            .PSTR   "NanoSD IO Card ROM v" || BUILDVER || "\r\n" 
+CLI_THELP_STR:       
+            .PSTR   "Type HELP for available cmds!\r\n" 
+
+PROMPT_STR:          
+            .PSTR   "> " 
+
+COMMAND_NOT_FOUND_STR:  
+            .PSTR   "Command not found\r\n" 
+IO_ERROR_STR:        
+            .PSTR   "IO ERROR: " 
+TIMEOUT_STR:         
+            .PSTR   "Operaton timed out..\r\n" 
+CD_OK_STR:           
+            .PSTR   "CD OK\r\n" 
+CD_NOK_STR:          
+            .PSTR   "CD Failed\r\n" 
+DIR_READ_FAILURE_STR:  
+            .PSTR   "Error reading directory: " 
+TYPE_DIR_STR:        
+            .PSTR   "<DIR>" 
+LARGE_SIZE_STR:      
+            .PSTR   "64+kB" 
+MISSING_PARAM_STR:   
+            .PSTR   "Missing parameter!\r\n" 
+MKDIR_OK_STR:        
+            .PSTR   "Directory created\r\n" 
+MKDIR_NOK_STR:       
+            .PSTR   "Directory create failed\r\n" 
+RMDIR_OK_STR:        
+            .PSTR   "Directory removed\r\n" 
+RMDIR_NOK_STR:       
+            .PSTR   "Directory remove failed\r\n" 
+DELETE_OK_STR:       
+            .PSTR   "File deleted\r\n" 
+DELETE_NOK_STR:      
+            .PSTR   "File delete failed\r\n" 
+DIR_BROKE_STR:       
+            .PSTR   "Dir interrupted ...\r\n" 
+
+
+
+
+
+
+

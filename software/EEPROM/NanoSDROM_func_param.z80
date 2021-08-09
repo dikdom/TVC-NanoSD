@@ -1,0 +1,111 @@
+; INPUT
+;   C: the ID of the parameter to get or set
+;   DE:
+;     SET: the value of an integer typed param or a pointer to a string
+;          type param
+;     GET: a pointer to a C string buffer in case of string type variable
+; OUTPUT:
+;   A:
+;     - 00: OK, param retreived/parameter is set
+;     - otherwise parameters in not found/nano is not available
+;   DE:
+;     GET:
+;       Integer value: the value itself
+;       String  value: the pointer that was given to the call
+; 
+; Known parameters:
+;  0 - Menustatus *byte)
+;      0: NO
+;      1: YES (Show menu on cold reset)
+;  1 - sort order (byte)
+;      0: no sort
+;      1: sort by name
+;      2: sort by size
+;  2 - SD card inserted (read-only gives param not found on write)
+;      0: not available, dir not available
+;      1: SD inserted, dir available
+;  3 - NanoSD fw version string. Only GET
+
+PARAM_HANDLER:       
+            .BLOCK  pwd 
+            LD      B,C 
+            LD      C,(IX+0) 
+            OR      A 
+            JP      P,SET_PARAMETER 
+            LD      A,SDISK_NANO_CMD_GETPARAMETER 
+            OUT     (C),A 
+            CALL    WAIT_100us 
+            OUT     (C),B 
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop th first response
+
+PARAM_GETTING_LOOP:  
+            CALL    WAIT_100us 
+            IN      A,(C) 
+            JP      P,PARAM_FOUND 
+            CP      RETVAL_INVALID_PARAMETER_ID 
+            JR      z,PARAM_NOT_FOUND 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,PARAM_GETTING_LOOP 
+            LD      a,2 
+            DB      00100001B ; LD HL,nn ... let's skip next instruction
+PARAM_NOT_FOUND:     
+            LD      a,1 
+            RET      
+PARAM_FOUND:         
+            CALL    WAIT_39T 
+            CP      3 
+            JR      z,READ_STRING 
+            CP      2 
+            JR      z,READ_WORD 
+            IN      E,(C) 
+            XOR     A 
+            LD      D,A 
+            RET      
+READ_WORD:           
+            IN      E,(C) 
+            CALL    WAIT_39T 
+            IN      D,(C) 
+            XOR     A 
+            RET      
+READ_STRING:         
+            PUSH    DE 
+READ_STRING_LOOP:    
+            CALL    WAIT_39T 
+            IN      A,(C) 
+            LD      (DE),A 
+            INC     DE 
+            JR      nz,READ_STRING_LOOP 
+            XOR     A 
+            POP     DE 
+            RET      
+
+SET_PARAMETER:       
+            LD      A,SDISK_NANO_CMD_SETPARAMETER 
+            OUT     (C),A 
+            CALL    WAIT_100us 
+            OUT     (C),B 
+            CALL    WAIT_100us 
+            OUT     (C),E 
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop th first response
+
+PARAM_SETTING_LOOP:  
+            CALL    WAIT_100us 
+            IN      A,(C) 
+            CP      RETVAL_PARAMETER_SET 
+            JR      z,PARAM_SET 
+            CP      RETVAL_INVALID_PARAMETER_ID 
+            JR      z,PARAM_NOT_SET 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,PARAM_SETTING_LOOP 
+PARAM_NOT_SET:       
+            LD      a,2 
+            RET      
+
+PARAM_SET:           
+            XOR     A 
+            RET      
+
+
+

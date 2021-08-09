@@ -1,0 +1,1767 @@
+SHOW_MENU:           
+            CALL    DRAW_TABLE 
+            CALL    PRINT_HELP_TEXTS 
+            CALL    INIT_INPUT_VARIABLES 
+            CALL    SETUP_SORT_SIGN 
+            JP      MENU_LOOP 
+
+LAST_KNOWN_SD_STATE EQU $1FE0 
+CHECK_SD_COUNTER EQU $1FE1 
+SORT_OF_VISIBLE_LIST EQU $1FE3 
+VAR_SORT_START_POI EQU $1FE4 
+VAR_SORT_END_POI EQU $1FE4 
+VAR_FIRST_DIR_POI EQU $1FE8 
+VAR_FIRST_FILE_POI EQU $1FEA 
+INCREASE_LINE EQU   $1FEC ; 2 bytes
+MENU_FIRST_ROW EQU  $1FEE ; 1 byte
+MENU_LAST_ROW EQU   $1FEF ; 1 byte
+WINDOW_POS  EQU     $1FF0 ; 2 bytes starting line pos (0 - DIR_SIZE-1)
+SELECT_POS  EQU     $1FF2 ; 1 byte  selected line on screen (0-15)
+DIR_SIZE    EQU     $1FF3 ; 2 bytes size of directory (0 - 2400)
+IS_IN_ROOT  EQU     $1FF5 ; 1 byte -> 0-not in root, otheriwse: in the root
+HIGHLIGHTED EQU     $1FF6 ; 1 byte -> 0 not in selected line
+
+AUTOLOAD_STR_BUFFER EQU $1F00 ; should be aligned to $100 due to ISR calc routine
+PRESSED_KEY EQU     $1FF7 
+PRESSED_KEY_COUNTER EQU $1FF8 
+KEY_REPEATED EQU    $1FF9 
+OLD_PRESSED_KEY EQU $1FFA 
+KEY_PRESS_IDX EQU   $1FFB 
+DIR_ENTRY_ADDR EQU  $1FFC ; (2 bytes)
+SORT_ORDER  EQU     $1FFE 
+SHOW_MENU_ON_BOOT EQU $1FFF ; important to position here, not zeroed by INIT_INPUT_VARIABLES
+PATH_INPUT  EQU     $2000 
+DIR_INPUT   EQU     $2040 
+STATUS_LINE_BACKUP EQU $2080 
+DIR_ENTRY_POIS EQU  $2100 
+DIR_DATA    EQU     $3000 
+DIR_ENTRY_LEN EQU   17 
+FIRST_KBD_COUNTER EQU 20 
+NEXT_KBD_COUNTER EQU 6 
+MENU_ON_BOOT_TXT_ROW EQU 4 
+MENU_ON_BOOT_TXT_COL EQU 40 
+CHECK_SD_CNT_VAL EQU 300 
+
+
+KEY_UP      EQU     $05 
+KEY_DOWN    EQU     $18 
+KEY_A       EQU     $61 
+KEY_Y       EQU     $79 
+KEY_EACUTE  EQU     $91 
+KEY_COLON   EQU     $01 
+KEY_LEFT    EQU     $13 
+KEY_RIGHT   EQU     $04 
+KEY_ESC     EQU     $1B 
+KEY_RETURN  EQU     $0D 
+KEY_SPACE   EQU     $20 
+KEY_S       EQU     $73 
+KEY_N       EQU     $6E 
+KEY_O       EQU     $6F 
+
+
+START_COL   EQU     01 
+START_ROW   EQU     02 
+
+
+INIT_INPUT_VARIABLES:  
+            XOR     A 
+            LD      HL,WINDOW_POS 
+            LD      DE,WINDOW_POS+1 
+            LD      (HL),A 
+            LD      BC,$000E 
+            LDIR     
+            LD      (MENU_FIRST_ROW),A ; 00
+            DEC     A 
+            LD      (KEY_PRESS_IDX),A 
+            LD      DE,DIR_ENTRY_POIS 
+            LD      HL,DIR_ENTRY_ADDR 
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D 
+            LD      A,15 
+            LD      (MENU_LAST_ROW),A ; 15
+            LD      C,PARAM_SORTORDER 
+            RST     $30 
+            DB      F_GETPARAM 
+            LD      A,E 
+            LD      (SORT_ORDER),A 
+            LD      HL,CHECK_SD_CNT_VAL ; check in each 3sec
+            LD      (CHECK_SD_COUNTER),HL 
+            LD      C,PARAM_SDAVAILABLE 
+            RST     $30 
+            DB      F_GETPARAM 
+            LD      A,E 
+            LD      (LAST_KNOWN_SD_STATE),A 
+            RET      
+
+LOAD_DIR:            
+            XOR     A 
+            LD      (SORT_OF_VISIBLE_LIST),A 
+            LD      HL,LOADING_DIRECTORY_STR 
+            CALL    PRINT_STATUS_MSG 
+            LD      hl,DIR_ENTRY_POIS 
+            LD      (DIR_ENTRY_ADDR),HL 
+            LD      HL,0 
+            LD      (DIR_SIZE),HL 
+            LD      DE,DIR_DATA 
+            LD      A,(IS_IN_ROOT) 
+            OR      A 
+            JR      nz,SKIP_CDUP 
+
+            LD      HL,(DIR_ENTRY_ADDR) ; HL -> DIR_ENTRY_POIS
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D 
+            INC     HL 
+            LD      (DIR_ENTRY_ADDR),HL 
+
+            LD      HL,1 
+            LD      (DIR_SIZE),HL 
+            LD      HL,CDUP_RECORD 
+            LD      BC,DIR_ENTRY_LEN 
+            LDIR     
+
+SKIP_CDUP:           
+            EX      DE,HL ; HL is the current DIR_DATA record pointer
+            LD      DE,DIR_INPUT 
+            PUSH    HL 
+            RST     30h 
+            DB      F_DIRFIRST 
+            POP     HL 
+            OR      A 
+            JR      nz,NO_MORE_FILES ; failed to read or no more files - either way: we are finished
+
+PROCESS_DIR_ENRY_LOOP:  
+            EX      DE,HL ; DE is current DIR_DATA pointer
+            LD      HL,(DIR_ENTRY_ADDR) 
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D 
+            INC     HL 
+            LD      (DIR_ENTRY_ADDR),HL 
+            LD      HL,DIR_INPUT 
+            LD      BC,DIR_ENTRY_LEN 
+            LDIR     
+            LD      HL,(DIR_SIZE) 
+            INC     HL 
+            LD      (DIR_SIZE),HL 
+
+            PUSH    de 
+            LD      bc,$100*(START_COL+14) + (START_ROW+20) 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      hl,(DIR_SIZE) 
+            CALL    INIT_PRINT_16BIT_DECIMAL_NUMBER 
+            POP     de 
+            EX      DE,HL ; HL is current DIR_DATA pointer
+            LD      DE,DIR_INPUT 
+            PUSH    HL 
+            RST     30h 
+            DB      F_DIRNEXT 
+            POP     HL 
+            OR      A 
+            JR      nz,NO_MORE_FILES ; failed to read
+            JR      PROCESS_DIR_ENRY_LOOP 
+
+NO_MORE_FILES:       
+            CALL    REVERT_STATUS_MSG 
+            RET      
+
+MUL_HL_BY_17:        
+            PUSH    bc 
+            PUSH    hl 
+            LD      b,4 
+MUL2:                
+            SLA     l 
+            RL      h 
+            DJNZ    MUL2 
+            POP     DE 
+            ADD     HL,DE 
+            POP     BC 
+            RET      
+
+PRINT_FILENAME:      
+            LD      BC,12 
+            RST     30h 
+            DB      F_EDBLKOUT 
+            RET      
+
+PRINT_CURRENT_LIST:  
+            LD      A,($0038) 
+            PUSH    AF 
+            LD      A,$C9 
+            LD      ($0038),A 
+
+            LD      HL,(WINDOW_POS) 
+            LD      A,(MENU_FIRST_ROW) 
+            LD      C,A 
+            LD      B,0 
+            ADD     HL,BC 
+            SLA     L 
+            RL      H 
+            LD      DE,DIR_ENTRY_POIS 
+            ADD     HL,DE 
+            LD      (DIR_ENTRY_ADDR),HL ; DIR_ENTY_ADDR contains the first entry* to be drawn
+
+PRINT_LIST_LOOP:     ; C - list idx
+            LD      A,C 
+            CP      16 
+            JP      z,END_OF_LIST_REACHED 
+            LD      A,(MENU_LAST_ROW) 
+            INC     A 
+            CP      C 
+            JP      z,END_OF_LIST_REACHED 
+
+            LD      HL,(WINDOW_POS) 
+            ADD     HL,BC 
+            EX      DE,HL 
+            LD      HL,(DIR_SIZE) ; HL is item number to be drawn
+            XOR     A 
+            SBC     HL,DE 
+            JP      z,END_OF_LIST_REACHED 
+            EX      DE,HL 
+
+            LD      A,(SELECT_POS) 
+            CP      C 
+            JR      nz,INVERT_PRINT_SKIP 
+            LD      A,(INK_COLOR) 
+            LD      B,A 
+            LD      A,(PAPER_COLOR) 
+            LD      (INK_COLOR),A 
+            LD      A,B 
+            LD      (PAPER_COLOR),A 
+            LD      A,1 
+            LD      (HIGHLIGHTED),A 
+INVERT_PRINT_SKIP:   
+            PUSH    BC ; C current row counter
+            LD      A,START_ROW + 3 
+            ADD     A,C 
+            LD      C,A ; row number on screen
+            LD      B,START_COL + 1 ; col number on screen
+            PUSH    BC ; Current cursor position, filename start
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,(DIR_ENTRY_ADDR) 
+            LD      E,(HL) 
+            INC     HL 
+            LD      D,(HL) 
+            CALL    PRINT_FILENAME 
+            POP     BC 
+            LD      B,START_COL + 1 + 13 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,(DIR_ENTRY_ADDR) 
+            LD      E,(HL) 
+            INC     HL 
+            LD      D,(HL) 
+            EX      de,hl 
+            LD      DE,12 
+            ADD     HL,DE 
+            LD      A,(HL) 
+            OR      A 
+            JR      nz,PRINT_FILE_SIZE 
+            LD      HL,TYPE_DIR_STR 
+            CALL    PRINT_STRING 
+            JR      DIR_LINE_END 
+PRINT_FILE_SIZE:     
+            INC     hl 
+            LD      e,(hl) ; low-to-high order bytes of filesize
+            INC     hl 
+            LD      d,(hl) 
+            INC     hl 
+            PUSH    de 
+            LD      e,(hl) 
+            INC     hl 
+            LD      a,(hl) 
+            POP     hl ; HL contains the low 16 bit of filesize
+            OR      e 
+            JR      nz,PRINT_LARGE_SIZE 
+            CALL    PRINT_16BIT_DECIMAL_NUMBER 
+            JR      DIR_LINE_END 
+PRINT_LARGE_SIZE:    
+            LD      hl,LARGE_SIZE_STR 
+            CALL    PRINT_STRING 
+DIR_LINE_END:        
+            POP     BC ; C contains the current ROW
+            LD      A,(HIGHLIGHTED) 
+            OR      A 
+            JR      z,PRINT_COLORS_OK 
+
+            LD      A,(INK_COLOR) 
+            LD      B,A 
+            LD      A,(PAPER_COLOR) 
+            LD      (INK_COLOR),A 
+            LD      A,B 
+            LD      (PAPER_COLOR),A 
+            XOR     A 
+            LD      (HIGHLIGHTED),A 
+PRINT_COLORS_OK:     
+            LD      HL,(DIR_ENTRY_ADDR) 
+            INC     HL 
+            INC     HL 
+            LD      (DIR_ENTRY_ADDR),HL 
+            INC     C 
+            JP      PRINT_LIST_LOOP 
+END_OF_LIST_REACHED:  
+            DI       
+            POP     AF 
+            LD      ($0038),A 
+            RET      
+
+CLEAR_TABLE:         
+            LD      A,(PORT02_SHADOW) 
+            PUSH    AF 
+            LD      A,$D0 ; U0-U1-VID-EXT
+            OUT     ($02),A 
+
+            LD      HL,(START_ROW-1 + 3)*640 + (START_COL-1 + 1) + $8000 
+            XOR     A 
+            LD      b,16 
+CLEAR_TBL_LOOP:      
+            PUSH    bc ; chr line number in stack
+            LD      b,10 
+ONE_CHAR_HEIGHT_LOOP:  
+            PUSH    bc 
+            LD      b,12 ; 12 characters (8+3 filenames + period)
+            PUSH    hl ; starting address of the pixel line
+FN_ONE_PXLINE_LOOP:  
+            LD      (HL),a 
+            INC     HL 
+            DJNZ    FN_ONE_PXLINE_LOOP 
+            INC     HL ; skip vertical bar
+            LD      b,5 ; fill 5 char long filesize
+FS_ONE_PXLINE_LOOP:  
+            LD      (HL),a 
+            INC     HL 
+            DJNZ    FS_ONE_PXLINE_LOOP 
+            POP     HL 
+            LD      DE,64 
+            ADD     HL,DE 
+            POP     BC 
+            DJNZ    ONE_CHAR_HEIGHT_LOOP 
+            POP     BC 
+            DJNZ    CLEAR_TBL_LOOP 
+            POP     AF 
+            LD      (PORT02_shadow),A 
+            OUT     ($02),A 
+            RET      
+
+CHECK_KEYS:          
+            LD      A,(PICTURE+8) 
+            LD      C,KEY_LEFT 
+            BIT     6,A ; LEFT
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_RIGHT ; RIGHT
+            BIT     5,A 
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_UP ; UP
+            BIT     1,A 
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_DOWN ; DOWN
+            BIT     2,A 
+            JP      z,KEY_PRESSED 
+            LD      A,(PICTURE+3) 
+            LD      C,KEY_O ; O
+            BIT     2,A 
+            JP      z,KEY_PRESSED 
+; A/Y up/dn
+; É/: le/ri
+            LD      A,(PICTURE+4) 
+            LD      C,KEY_A ; A
+            BIT     6,A 
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_S 
+            BIT     2,A 
+            JP      z,KEY_PRESSED 
+            LD      A,(PICTURE+5) 
+            LD      C,$91 ; É
+            BIT     6,A 
+            JP      z,KEY_PRESSED 
+            LD      C,$0D ; RET
+            BIT     4,A 
+            JP      z,KEY_PRESSED 
+            LD      A,(PICTURE+6) 
+            LD      C,KEY_Y ; Y
+            BIT     6,A 
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_N 
+            BIT     4,A 
+            JP      z,KEY_PRESSED 
+            LD      A,(PICTURE+7) 
+            LD      C,KEY_COLON ; : (colon)
+            BIT     2,A 
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_ESC ; ESC
+            BIT     3,A 
+            JP      z,KEY_PRESSED 
+            LD      C,KEY_SPACE ; SPACE
+            BIT     5,A 
+            JP      z,KEY_PRESSED 
+            XOR     A 
+            LD      (PRESSED_KEY),A 
+            RET      
+
+KEY_PRESSED:         
+            LD      A,(PRESSED_KEY) 
+            CP      C 
+            JR      z,OLD_KEY_PRESSED 
+            XOR     A 
+            LD      (KEY_REPEATED),A 
+            LD      A,C 
+            LD      (PRESSED_KEY),A 
+            LD      A,FIRST_KBD_COUNTER 
+            LD      (PRESSED_KEY_COUNTER),A 
+            RET      
+OLD_KEY_PRESSED:     
+            OR      A 
+            JR      z,NO_KEY_PRESSED 
+            LD      HL,PRESSED_KEY_COUNTER 
+            DEC     (HL) 
+NO_KEY_PRESSED:      
+            RET      
+
+GET_KEY:             
+            LD      A,(PRESSED_KEY) 
+            LD      C,A 
+            OR      A 
+            JR      z,KEY_FOUND 
+            LD      A,(PRESSED_KEY_COUNTER) 
+            CP      FIRST_KBD_COUNTER 
+            JR      z,KEY_FOUND 
+            OR      A 
+            JR      z,REPEAT_KEY 
+            LD      C,0 
+KEY_FOUND:           
+            RET      
+
+REPEAT_KEY:          
+            LD      A,NEXT_KBD_COUNTER 
+            LD      (PRESSED_KEY_COUNTER),A 
+            RET      
+
+
+FILL_PICTURE:        
+            LD      B,9 
+            LD      HL,PICTURE + 9 
+SCAN_KBD_LOOP:       
+            LD      A,(PORT03_SHADOW) 
+            AND     $F0 
+            OR      B 
+            OUT     ($03),A 
+            IN      A,($58) 
+            LD      (HL),A 
+            DEC     HL 
+            DEC     B 
+            JP      p,SCAN_KBD_LOOP 
+            RET      
+
+UPDATE_SCREEN:       
+            CALL    PRINT_CURRENT_LIST 
+            JP      WAIT_IN_INPUT 
+PROCESS_UP:          
+            LD      A,(SELECT_POS) 
+            OR      A 
+            JR      z,ALREADY_FIRST_SELECTED 
+            DEC     A 
+            LD      (SELECT_POS),A 
+            LD      (MENU_FIRST_ROW),A 
+            INC     A 
+            LD      (MENU_LAST_ROW),A 
+            CALL    PRINT_CURRENT_LIST 
+            XOR     a 
+            LD      (MENU_FIRST_ROW),A 
+            LD      A,15 
+            LD      (MENU_LAST_ROW),A 
+            JP      WAIT_IN_INPUT 
+
+ALREADY_FIRST_SELECTED:  
+            LD      HL,(WINDOW_POS) 
+            LD      A,H 
+            OR      L 
+            JR      z,NOTHING_TO_DO 
+            DEC     HL 
+            LD      (WINDOW_POS),HL 
+            CALL    MOVE_ONELINE_DOWN 
+            LD      a,1 
+            LD      (MENU_LAST_ROW),A 
+            CALL    PRINT_CURRENT_LIST 
+            LD      a,15 
+            LD      (MENU_LAST_ROW),A 
+NOTHING_TO_DO:       
+            JP      WAIT_IN_INPUT 
+
+PROCESS_DOWN:        
+            XOR     A 
+            LD      D,A 
+            LD      A,(SELECT_POS) 
+            LD      E,A 
+            LD      HL,(WINDOW_POS) 
+            ADD     HL,DE 
+            EX      DE,HL 
+            LD      HL,(DIR_SIZE) 
+            LD      A,H 
+            OR      L 
+            JR      z,NOTHING_TO_DO ; no item in list
+            DEC     HL ; last position
+            SBC     HL,DE 
+            JR      z,NOTHING_TO_DO ; SELECT_POS + WINDOW_POS is at last position
+            LD      A,(SELECT_POS) 
+            CP      15 
+            JR      z,MOVE_WINDOW 
+            INC     A 
+            LD      (SELECT_POS),A 
+            LD      (MENU_LAST_ROW),A 
+            DEC     A 
+            LD      (MENU_FIRST_ROW),A 
+            CALL    PRINT_CURRENT_LIST 
+            XOR     a 
+            LD      (MENU_FIRST_ROW),A 
+            LD      A,15 
+            LD      (MENU_LAST_ROW),A 
+            JP      WAIT_IN_INPUT 
+
+MOVE_WINDOW:         
+            LD      HL,(WINDOW_POS) 
+            INC     HL 
+            LD      (WINDOW_POS),HL 
+
+            CALL    MOVE_ONELINE_UP 
+            LD      a,14 
+            LD      (MENU_FIRST_ROW),A 
+            CALL    PRINT_CURRENT_LIST 
+            LD      a,0 
+            LD      (MENU_FIRST_ROW),A 
+            JP      WAIT_IN_INPUT 
+
+MOVE_ONELINE_UP:     
+            LD      HL,64 
+            LD      (INCREASE_LINE),HL 
+            LD      HL,$8000 + ((START_ROW - 1 + 4) * 640) + (START_COL) 
+            LD      DE,$8000 + ((START_ROW - 1 + 3) * 640) + (START_COL) 
+            LD      B,14*10 
+            JR      MOVE_LINES 
+
+MOVE_ONELINE_DOWN:   
+            LD      HL,-64 
+            LD      (INCREASE_LINE),HL 
+            LD      HL,$8000 + ((START_ROW - 1 + 17) * 640) + (START_COL) + 9*64 
+            LD      DE,$8000 + ((START_ROW - 1 + 18) * 640) + (START_COL) + 9*64 
+            LD      B,14*10 
+MOVE_LINES:          
+            LD      a,$D0 ; U0-U1-VID-EXT
+            OUT     ($02),a 
+MOVE_LINE_LOOP:      
+            PUSH    bc 
+            PUSH    de 
+            PUSH    hl 
+            LD      bc,18 
+            LDIR     
+            POP     hl 
+            LD      de,(INCREASE_LINE) 
+            ADD     hl,de 
+            POP     DE 
+            PUSH    hl 
+            EX      de,hl 
+            LD      de,(INCREASE_LINE) 
+            ADD     hl,de 
+            EX      de,hl 
+            POP     hl 
+            POP     bc 
+            DJNZ    MOVE_LINE_LOOP 
+            LD      a,(PORT02_SHADOW) 
+            OUT     ($02),A 
+            RET      
+
+PROCESS_PGUP:        
+            LD      HL,(WINDOW_POS) 
+            LD      A,H 
+            OR      L 
+            JR      z,ALREADY_ON_TOP 
+            LD      DE,16 
+            XOR     A 
+            SBC     HL,DE 
+            JR      nc,NO_OVERFLOW_ON_PGUP 
+            LD      HL,0 
+NO_OVERFLOW_ON_PGUP:  
+            LD      (WINDOW_POS),HL 
+            JP      UPDATE_SCREEN 
+ALREADY_ON_TOP:      
+            LD      (SELECT_POS),A 
+            JP      UPDATE_SCREEN 
+
+
+
+
+PROCESS_PGDN:        
+; dir_size = 0-16, fits in one page, last item must be selected
+            LD      HL,(DIR_SIZE) 
+            LD      DE,17 
+            XOR     A 
+            SBC     HL,DE 
+            JP      c,SELECT_ONE_PAGE_LAST_ITEM 
+
+; current window_pos is+16 > dir_size, we are on the last page
+            LD      HL,(WINDOW_POS) 
+            LD      DE,16 
+            ADD     HL,DE 
+            EX      DE,HL 
+            LD      HL,(DIR_SIZE) 
+            XOR     A 
+            SBC     HL,DE 
+            JP      z,SELECT_LAST_ITEM 
+
+; current window_pos is < dir_size - 32, we cannot fully pgdn,
+; let's show the last page fully
+            LD      HL,(WINDOW_POS) 
+            LD      DE,32 
+            ADD     HL,DE 
+            EX      DE,HL 
+            LD      HL,(DIR_SIZE) 
+            XOR     A 
+            SBC     HL,DE 
+            JP      c,PGDN_TO_LAST_PAGE 
+
+; we can safely page down one full page
+            LD      hl,(WINDOW_POS) 
+            LD      de,16 
+            ADD     hl,de 
+            LD      (WINDOW_POS),HL 
+            JP      UPDATE_SCREEN 
+
+PROCESS_RETURN:      
+            LD      HL,(WINDOW_POS) 
+            LD      D,0 
+            LD      A,(SELECT_POS) 
+            LD      E,A 
+            ADD     HL,DE 
+            SLA     L 
+            RL      H 
+            LD      DE,DIR_ENTRY_POIS 
+            ADD     HL,DE 
+            LD      E,(HL) 
+            INC     HL 
+            LD      D,(HL) 
+            EX      DE,HL 
+            PUSH    HL 
+            LD      DE,12 
+            ADD     HL,DE 
+            LD      A,(HL) ; type of entry
+            POP     HL ; HL: addr of entry
+            OR      A 
+            JR      nz,FILE_SELECTED 
+            PUSH    HL 
+            LD      DE,12 ; let's start at the entry type..
+            ADD     HL,DE 
+            LD      A," " 
+            LD      C,13 
+TRUNCATE_FILE_LOOP:  
+            DEC     HL 
+            DEC     C 
+            JR      z,WHAT_THE_HECK 
+            CP      (HL) 
+            JR      z,TRUNCATE_FILE_LOOP 
+            XOR     A 
+            LD      B,A 
+            POP     HL 
+            LD      DE,DIR_INPUT 
+            LDIR     
+            LD      (DE),A 
+            LD      DE,DIR_INPUT 
+            RST     $30 
+            DB      F_CHDIR + $50 
+            CALL    CLEAR_TABLE 
+            LD      hl,0 
+            LD      (WINDOW_POS),HL 
+            XOR     a 
+            LD      (SELECT_POS),A 
+;            LD      (SORT_OF_VISIBLE_LIST),A
+            JP      MENU_LOOP 
+
+
+WHAT_THE_HECK:       
+            POP     HL ; do nothing...
+            JP      MENU_LOOP 
+
+FILE_SELECTED:       
+            PUSH    HL 
+            LD      bc,LOAD_STR_END - LOAD_STR 
+            LD      hl,LOAD_STR 
+            LD      DE,AUTOLOAD_STR_BUFFER 
+            LDIR     
+            POP     HL 
+            LD      bc,12 
+            LDIR     
+FIND_FNAME_END_LOOP:  
+            DEC     DE 
+            LD      a,(DE) 
+            CP      $20 
+            JR      z,FIND_FNAME_END_LOOP 
+            INC     DE 
+            LD      a,$22 ; "
+            LD      (DE),A 
+            INC     DE 
+            LD      a,$0D 
+            LD      (DE),A 
+
+            XOR     A 
+            LD      (KEY_PRESS_IDX),A 
+
+            RET      
+
+
+SELECT_ONE_PAGE_LAST_ITEM:  
+            LD      A,(DIR_SIZE) 
+            DEC     A 
+            JP      M,NOTHING_TO_DO ; DIR_SIZE is 0
+            LD      (SELECT_POS),A 
+            JP      UPDATE_SCREEN 
+
+SELECT_LAST_ITEM:    
+            LD      a,15 
+            LD      (SELECT_POS),A 
+            JP      UPDATE_SCREEN 
+
+PGDN_TO_LAST_PAGE:   
+            LD      HL,(DIR_SIZE) 
+            LD      DE,16 
+            XOR     A 
+            SBC     HL,DE 
+            LD      (WINDOW_POS),HL 
+            JP      UPDATE_SCREEN 
+
+PROCESS_SPACE:       
+            LD      bc,(MENU_ON_BOOT_TXT_COL+20)*256 + MENU_ON_BOOT_TXT_ROW 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,SHOW_MENU_ON_BOOT 
+            LD      a,1 
+            SUB     (hl) 
+            LD      (HL),A 
+            PUSH    AF 
+            LD      E,A ; boot value
+            LD      c,PARAM_MENUONBOOT ; param boot
+            RST     $30 
+            DB      F_SETPARAM 
+            POP     AF 
+            OR      A 
+            JR      z,PRINT_NEXT_BOOT_NO 
+            LD      HL,MENU_ON_BOOT_YES_STR 
+            JR      PRINT_NEXT_BOOT_VALUE 
+PRINT_NEXT_BOOT_NO:  
+            LD      HL,MENU_ON_BOOT_NO_STR 
+PRINT_NEXT_BOOT_VALUE:  
+            CALL    INIT_PRINT_STRING 
+            LD      A,(HL) 
+            JP      WAIT_IN_INPUT 
+
+PROCESS_ORIGINAL_ORDER:  
+            LD      A,(SORT_ORDER) 
+            OR      A 
+            JP      z,INPUT_LOOP 
+            LD      C,PARAM_SORTORDER ; let's store the sort order (no sort)
+            LD      E,0 ; no sort
+            RST     $30 
+            DB      F_SETPARAM 
+            LD      BC,0 
+            LD      DE,DIR_DATA 
+            LD      HL,DIR_ENTRY_POIS 
+ORIG_ORDER_LOOP:     
+            LD      A,(DIR_SIZE) 
+            CP      C 
+            JR      nz,GO_ON_WITH_FILL 
+            LD      A,(DIR_SIZE+1) 
+            CP      B 
+            JR      nz,GO_ON_WITH_FILL 
+            LD      HL,0 
+            LD      (WINDOW_POS),HL 
+            XOR     A 
+            LD      (SELECT_POS),A 
+            LD      (SORT_OF_VISIBLE_LIST),A 
+            LD      (SORT_ORDER),A 
+            CALL    PRINT_CURRENT_LIST 
+            CALL    SETUP_SORT_SIGN 
+            JP      INPUT_LOOP 
+
+GO_ON_WITH_FILL:     
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D 
+            INC     HL 
+            PUSH    HL 
+            EX      DE,HL 
+            LD      DE,DIR_ENTRY_LEN 
+            ADD     HL,DE 
+            EX      DE,HL 
+            POP     HL 
+            INC     BC 
+            JR      ORIG_ORDER_LOOP 
+
+SEPARATE_FILES_AND_DIRECTORIES:  
+            LD      HL,DIR_ENTRY_POIS 
+            LD      BC,0 
+; let's find first non-dir entry
+            LD      (VAR_FIRST_DIR_POI),HL 
+SEPARATE_LOOP:       
+            EX      de,hl 
+            LD      HL,(DIR_SIZE) 
+            XOR     A 
+            SBC     HL,BC 
+            EX      de,hl 
+            JR      z,END_OF_SEPARATELIST_REACHED 
+
+            LD      E,(HL) 
+            INC     HL 
+            LD      D,(HL) 
+            DEC     HL 
+            PUSH    HL 
+            EX      DE,HL 
+            LD      DE,12 
+            ADD     HL,DE 
+            LD      A,(HL) 
+            POP     HL 
+            OR      A 
+            JR      nz,FILE_FOUND 
+            INC     BC 
+            INC     HL 
+            INC     HL 
+            JP      SEPARATE_LOOP 
+END_OF_SEPARATELIST_REACHED:  
+FILE_FOUND:          
+            LD      (VAR_FIRST_FILE_POI),HL 
+            RET     z 
+DIR_FILE_EXCHANGE_LOOP:  
+            PUSH    hl 
+            LD      e,(hl) 
+            INC     hl 
+            LD      d,(hl) 
+            EX      de,hl 
+            LD      de,12 
+            ADD     hl,de 
+            LD      a,(hl) 
+            POP     hl 
+            OR      A 
+            JR      nz,CHECK_NEXT_ENTRY 
+            PUSH    bc 
+            PUSH    hl ; s1 act poi
+            LD      e,(hl) 
+            INC     hl 
+            LD      d,(hl) 
+            LD      hl,(VAR_FIRST_FILE_POI) 
+            PUSH    hl ; s2 first file poi
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            POP     hl ; first file po
+            LD      (hl),e 
+            INC     hl 
+            LD      (hl),d 
+            INC     hl ; ffp + 1
+            LD      (VAR_FIRST_FILE_POI),HL 
+            POP     hl ; s1 act poi
+            PUSH    hl 
+            LD      (hl),c 
+            INC     hl 
+            LD      (hl),b 
+            POP     hl 
+            POP     bc 
+CHECK_NEXT_ENTRY:    
+            INC     hl 
+            INC     hl 
+            INC     bc 
+            PUSH    HL 
+            LD      HL,(DIR_SIZE) 
+            XOR     a 
+            SBC     HL,BC 
+            POP     HL 
+            JR      nz,DIR_FILE_EXCHANGE_LOOP 
+            RET      
+
+PROCESS_SORT_BY_NAME:  
+            LD      a,(SORT_OF_VISIBLE_LIST) 
+            CP      1 
+            JP      z,INPUT_LOOP 
+            LD      hl,SORTING_BY_NAME_STR 
+            CALL    PRINT_STATUS_MSG 
+            LD      a,(SORT_OF_VISIBLE_LIST) 
+            CP      2 
+            JR      z,SKIP_SEPARATE_IN_BY_NAME 
+            CALL    SEPARATE_FILES_AND_DIRECTORIES 
+            LD      HL,(VAR_FIRST_DIR_POI) 
+            LD      DE,(VAR_FIRST_FILE_POI) 
+            DEC     DE 
+            DEC     DE 
+            CALL    SORT_RANGE_BY_NAME 
+SKIP_SEPARATE_IN_BY_NAME:  
+            LD      DE,(DIR_SIZE) 
+            DEC     DE 
+            SLA     E 
+            RL      D 
+            LD      HL,DIR_ENTRY_POIS 
+            ADD     HL,DE 
+            EX      DE,HL 
+            LD      HL,(VAR_FIRST_FILE_POI) 
+            CALL    SORT_RANGE_BY_NAME 
+            LD      A,1 
+            LD      (SORT_OF_VISIBLE_LIST),A 
+            LD      HL,SORT_ORDER 
+            CP      (HL) 
+            JR      z,PARAM_SAVED_AFTER_SORT 
+            LD      (HL),A 
+            LD      C,PARAM_SORTORDER ; let's store the sort order
+            LD      E,A ; value -> by name
+            RST     $30 
+            DB      F_SETPARAM 
+            CALL    SETUP_SORT_SIGN 
+PARAM_SAVED_AFTER_SORT:  
+            LD      HL,0 
+            LD      (WINDOW_POS),HL 
+            XOR     A 
+            LD      (SELECT_POS),A 
+            CALL    PRINT_CURRENT_LIST 
+            CALL    REVERT_STATUS_MSG 
+            JP      INPUT_LOOP 
+
+PROCESS_SORT_BY_SIZE:  
+            LD      A,(SORT_OF_VISIBLE_LIST) 
+            CP      2 
+            JP      z,INPUT_LOOP 
+            LD      hl,SORTING_BY_SIZE_STR 
+            CALL    PRINT_STATUS_MSG 
+            LD      A,(SORT_OF_VISIBLE_LIST) 
+            CP      1 
+            JR      z,SKIP_SEPARATE_IN_BY_SIZE 
+            CALL    SEPARATE_FILES_AND_DIRECTORIES 
+            LD      HL,(VAR_FIRST_DIR_POI) 
+            LD      DE,(VAR_FIRST_FILE_POI) 
+            DEC     DE 
+            DEC     DE 
+            CALL    SORT_RANGE_BY_NAME 
+SKIP_SEPARATE_IN_BY_SIZE:  
+            LD      HL,(VAR_FIRST_DIR_POI) 
+            LD      DE,(DIR_SIZE) 
+            DEC     de 
+            SLA     E 
+            RL      D 
+            LD      HL,DIR_ENTRY_POIS 
+            ADD     HL,DE 
+            EX      DE,HL 
+            LD      HL,(VAR_FIRST_FILE_POI) 
+            CALL    SORT_RANGE_BY_SIZE 
+
+            LD      A,2 
+            LD      (SORT_OF_VISIBLE_LIST),A 
+            LD      HL,SORT_ORDER 
+            CP      (HL) 
+            JR      z,PARAM_SAVED_AFTER_SORT 
+            LD      (HL),A 
+            LD      C,PARAM_SORTORDER ; let's store the sort order
+            LD      E,A ; value -> by size
+            RST     $30 
+            DB      F_SETPARAM 
+            CALL    SETUP_SORT_SIGN 
+
+            JP      PARAM_SAVED_AFTER_SORT 
+
+SETUP_SORT_SIGN:     
+            LD      bc,0100h * (START_COL + 4) + (START_ROW + 1) 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      A,(SORT_ORDER) 
+            LD      C,$20 
+            CP      1 
+            JR      nz,PRINT_NAME_SORT_SIGN 
+            LD      C,$5E 
+PRINT_NAME_SORT_SIGN:  
+            CALL    INIT_PRINT_CHAR 
+
+            LD      BC,0100h * (START_COL + 14) + (START_ROW + 1) 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      A,(SORT_ORDER) 
+            LD      C,$20 
+            CP      2 
+            JR      nz,PRINT_SIZE_SORT_SIGN 
+            LD      C,$5E 
+PRINT_SIZE_SORT_SIGN:  
+            CALL    INIT_PRINT_CHAR 
+            RET      
+
+COMP_BY_NAME:        
+            PUSH    hl 
+            PUSH    de 
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            PUSH    bc 
+            EX      de,hl 
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            PUSH    bc 
+            POP     de 
+            POP     hl 
+            LD      b,12 
+COMP_NAME_LOOP:      
+            LD      a,(de) 
+            CP      (hl) 
+            JR      nz,EXIT_COMP_NAME_LOOP 
+            INC     hl 
+            INC     de 
+            DJNZ    COMP_NAME_LOOP 
+EXIT_COMP_NAME_LOOP:  
+            POP     de 
+            POP     hl 
+            RET      
+
+COMP_BY_SIZE:        
+            PUSH    hl 
+            PUSH    de 
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            LD      hl,16 
+            ADD     hl,bc 
+            PUSH    hl 
+            EX      de,hl 
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            LD      hl,16 
+            ADD     hl,bc 
+            PUSH    hl 
+            POP     de 
+            POP     hl 
+            LD      b,4 
+COMP_SIZE_LOOP:      
+            LD      a,(de) 
+            CP      (hl) 
+            JR      nz,EXIT_COMP_SIZE_LOOP 
+            DEC     hl 
+            DEC     de 
+            DJNZ    COMP_SIZE_LOOP 
+EXIT_COMP_SIZE_LOOP:  
+            POP     de 
+            POP     hl 
+            CALL    z,COMP_BY_NAME 
+            RET      
+
+SWITCH_DE_HL_POINTED_POIS:  
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            DEC     hl 
+            PUSH    bc 
+            EX      de,hl 
+            LD      c,(hl) 
+            INC     hl 
+            LD      b,(hl) 
+            DEC     hl 
+            EX      de,hl 
+            LD      (hl),c 
+            INC     hl 
+            LD      (hl),b 
+            DEC     hl 
+            POP     bc 
+            EX      de,hl 
+            LD      (hl),c 
+            INC     hl 
+            LD      (hl),b 
+            DEC     hl 
+            EX      de,hl 
+            RET      
+
+SORT_RANGE_BY_NAME:  
+            LD      (VAR_SORT_START_POI),HL 
+            LD      (VAR_SORT_END_POI),DE 
+            XOR     a 
+            EX      de,hl 
+            SBC     hl,de 
+            RET     z ; 1 element in range
+            RET     c ; 0 element in range
+            EX      de,hl 
+            LD      DE,(VAR_SORT_END_POI) 
+RANGE_BY_NAME_OUTER_LOOP:  
+            LD      d,h 
+            LD      e,l 
+RANGE_BY_NAME_INNER_LOOP:  
+            PUSH    hl 
+            INC     de 
+            INC     de 
+            CALL    COMP_BY_NAME 
+            CALL    c,SWITCH_DE_HL_POINTED_POIS 
+            LD      hl,(VAR_SORT_END_POI) 
+            XOR     a 
+            SBC     hl,de 
+            POP     hl 
+            JR      nz,RANGE_BY_NAME_INNER_LOOP 
+            INC     hl 
+            INC     hl 
+            LD      de,(VAR_SORT_END_POI) 
+            EX      de,hl 
+            XOR     a 
+            SBC     hl,de 
+            EX      de,hl 
+            JR      nz,RANGE_BY_NAME_OUTER_LOOP 
+            RET      
+
+SORT_RANGE_BY_SIZE:  
+            LD      (VAR_SORT_START_POI),HL 
+            LD      (VAR_SORT_END_POI),DE 
+            EX      de,hl 
+            XOR     a 
+            SBC     hl,de 
+            RET     z ; 1 element in range
+            RET     c ; 0 element in range
+            EX      de,hl 
+            LD      DE,(VAR_SORT_END_POI) 
+RANGE_BY_SIZE_OUTER_LOOP:  
+            LD      d,h 
+            LD      e,l 
+RANGE_BY_SIZE_INNER_LOOP:  
+            PUSH    hl 
+            INC     de 
+            INC     de 
+            CALL    COMP_BY_SIZE 
+            CALL    c,SWITCH_DE_HL_POINTED_POIS 
+            LD      hl,(VAR_SORT_END_POI) 
+            XOR     a 
+            SBC     hl,de 
+            POP     hl 
+            JR      nz,RANGE_BY_SIZE_INNER_LOOP 
+            INC     hl 
+            INC     hl 
+            LD      de,(VAR_SORT_END_POI) 
+            EX      de,hl 
+            XOR     a 
+            SBC     hl,de 
+            EX      de,hl 
+            JR      nz,RANGE_BY_SIZE_OUTER_LOOP 
+            RET      
+
+SORT_IF_NEEDED:      
+            RET      
+
+CHECK_SD:            
+            LD      HL,(CHECK_SD_COUNTER) 
+            DEC     HL 
+            LD      (CHECK_SD_COUNTER),HL 
+            LD      A,L 
+            OR      H 
+            RET     nz 
+            LD      HL,CHECK_SD_CNT_VAL 
+            LD      (CHECK_SD_COUNTER),HL 
+            LD      C,PARAM_SDAVAILABLE 
+            RST     $30 
+            DB      F_GETPARAM 
+            OR      A 
+            RET     nz ; param not available -> nano is not available, let's try after a few secs again
+            LD      HL,LAST_KNOWN_SD_STATE 
+            LD      A,E 
+            CP      (HL) 
+            RET     z ; no change
+            LD      (HL),A 
+            LD      hl,0 ; let!s reset the seelction line (on every SD avail change..,never mind)
+            LD      a,l 
+            LD      (WINDOW_POS),HL 
+            LD      (SELECT_POS),A 
+            LD      (DIR_SIZE),HL 
+            POP     HL ; let's drop the CALL (Ugliest solution ever!!)
+            CALL    CLEAR_TABLE 
+;            JR      MENU_LOOP ; reread everyting..
+
+MENU_LOOP:           
+            CALL    LOAD_PWD 
+;            CALL    FILL_PWD_WITH_TEST_DATA
+            LD      A,(PATH_INPUT+$3F) 
+            OR      A 
+            PUSH    AF 
+            CALL    nz,LOAD_DIR ;   skip dir load on no path/no SD
+            CALL    PRINT_PATH_FIELD 
+            POP     AF 
+            JR      z,INPUT_LOOP ; let's not sort on no SD available 
+            LD      A,(SORT_ORDER) 
+            CP      1 
+            JP      z,PROCESS_SORT_BY_NAME 
+            CP      2 
+            JP      z,PROCESS_SORT_BY_SIZE 
+
+;            CALL    FILL_DIR_WITH_TEST_DATA
+            CALL    PRINT_CURRENT_LIST 
+
+INPUT_LOOP:          
+            CALL    CHECK_SD 
+            CALL    FILL_PICTURE 
+            CALL    CHECK_KEYS 
+            CALL    GET_KEY 
+
+            XOR     a 
+            CP      C 
+            JR      z,WAIT_IN_INPUT 
+            LD      A,KEY_ESC 
+            CP      C 
+            RET     z 
+            LD      A,KEY_UP 
+            CP      C 
+            JP      z,PROCESS_UP 
+            LD      A,KEY_A 
+            CP      C 
+            JP      z,PROCESS_UP 
+            LD      A,KEY_DOWN 
+            CP      C 
+            JP      z,PROCESS_DOWN 
+            LD      A,KEY_Y 
+            CP      C 
+            JP      z,PROCESS_DOWN 
+            LD      A,KEY_LEFT 
+            CP      C 
+            JP      z,PROCESS_PGUP 
+            LD      A,KEY_EACUTE 
+            CP      C 
+            JP      z,PROCESS_PGUP 
+            LD      A,KEY_RIGHT 
+            CP      C 
+            JP      z,PROCESS_PGDN 
+            LD      A,KEY_COLON 
+            CP      C 
+            JP      z,PROCESS_PGDN 
+            LD      A,KEY_RETURN 
+            CP      C 
+            JP      z,PROCESS_RETURN 
+            LD      a,KEY_SPACE 
+            CP      C 
+            JP      z,PROCESS_SPACE 
+            LD      a,KEY_O 
+            CP      C 
+            JP      z,PROCESS_ORIGINAL_ORDER 
+            LD      a,KEY_N 
+            CP      C 
+            JP      z,PROCESS_SORT_BY_NAME 
+            LD      a,KEY_S 
+            CP      C 
+            JP      z,PROCESS_SORT_BY_SIZE 
+
+WAIT_IN_INPUT:       
+            LD      b,10 
+WAIT_IN_INPUT_LOOP:  
+            CALL    wait_1ms 
+            DJNZ    WAIT_IN_INPUT_LOOP 
+            JP      INPUT_LOOP 
+
+PRINT_HELP_TEXTS:    
+            LD      A,($0038) 
+            PUSH    AF 
+            LD      A,$C9 
+            LD      ($0038),A 
+
+            LD      bc,MENU_ON_BOOT_TXT_COL*256+MENU_ON_BOOT_TXT_ROW 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,MENU_ON_BOOT_STR 
+            CALL    PRINT_STRING 
+            LD      A,(SHOW_MENU_ON_BOOT) 
+            OR      A 
+            JR      z,SHOW_NO_ON_NEXT_BOOT 
+            LD      HL,MENU_ON_BOOT_YES_STR 
+            JR      PRINT_BOOT_VALUE 
+SHOW_NO_ON_NEXT_BOOT:  
+            LD      HL,MENU_ON_BOOT_NO_STR 
+PRINT_BOOT_VALUE:    
+            CALL    PRINT_STRING 
+
+            LD      bc,24*256+7 
+            LD      HL,MENU_HELP_TEXT_STR 
+HELP_TEXT_LINE:      
+            PUSH    BC 
+            RST     $30 
+            DB      F_EDCPOS 
+PRINT_HELP_TEXT_LOOP:  
+            LD      c,(hl) 
+            LD      A,$FF 
+            CP      C 
+            JR      z,END_OF_HELP_TEXT 
+            INC     A 
+            CP      C 
+            JR      z,END_OF_LINE 
+            RST     $30 
+            DB      F_EDCHOUT 
+            INC     HL 
+            JR      PRINT_HELP_TEXT_LOOP 
+END_OF_LINE:         
+            POP     BC 
+            INC     C 
+            INC     HL 
+            JR      HELP_TEXT_LINE 
+END_OF_HELP_TEXT:    
+            POP     BC 
+            DI       
+            POP     AF 
+            LD      ($0038),A 
+            RET      
+
+CALC_CSTR_LEN:       
+            PUSH    HL 
+            LD      b,$FF 
+CHECK_NEXT_CHAR:     
+            INC     B 
+            LD      a,(HL) 
+            INC     HL 
+            OR      A 
+            JR      nz,check_next_char 
+            LD      a,b 
+            POP     HL 
+            RET      
+
+LOAD_PWD:            
+            LD      de,PATH_INPUT 
+            RST     $30 
+            DB      F_PWD+$50 
+            LD      (IS_IN_ROOT),A ; in case of failure: no ".." in the list
+            OR      A 
+            JR      nz,GETTING_PWD_FAILED 
+            LD      hl,PATH_INPUT 
+            CALL    CALC_CSTR_LEN 
+            LD      (PATH_INPUT + $3F),A 
+            CP      1 
+            JR      nz,LOAD_PWD_DONE 
+            LD      A,(PATH_INPUT) 
+            CP      "/" 
+            JR      nz,LOAD_PWD_DONE ; nonsense...
+            LD      A,1 
+            LD      (IS_IN_ROOT),A 
+LOAD_PWD_DONE:       
+            RET      
+GETTING_PWD_FAILED:  
+            XOR     A ; no valid path in buffer
+            LD      (PATH_INPUT+$3F),A 
+            RET      
+
+PRINT_PATH_FIELD:    
+            LD      BC,$100 * (START_COL + 1) + (START_ROW + 20) 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      A,(PATH_INPUT+$3F) 
+            OR      A 
+            JP      z,PWD_FAILED 
+
+PRINT_PWD:           
+            CP      19 ; length is >= 19
+            JR      nc,TRUNCATE_WORKDIR 
+            LD      HL,PATH_INPUT 
+            CALL    INIT_PRINT_CSTRING 
+            LD      hl,PATH_INPUT + $3F 
+            LD      A,18 
+            SUB     (HL) 
+            OR      A 
+            RET     z 
+            LD      B,A 
+            LD      A,($0038) 
+            PUSH    AF 
+            LD      A,$C9 
+            LD      ($0038),A 
+            LD      C," " 
+PAD_PATH_LOOP:       
+            PUSH    BC 
+            RST     $30 
+            DB      F_EDCHOUT 
+            POP     BC 
+            DJNZ    PAD_PATH_LOOP 
+PRINT_PATH_DONE:     
+            DI       
+            POP     AF 
+            LD      ($0038),A 
+            RET      
+TRUNCATE_WORKDIR:    
+            LD      A,($0038) 
+            PUSH    AF 
+            LD      A,$C9 
+            LD      ($0038),A 
+            LD      HL,PATH_INPUT 
+            LD      D,00 
+BEGIN_PATH_LOOP:     
+            PUSH    DE 
+            LD      C,(hl) 
+            RST     $30 
+            DB      F_EDCHOUT 
+            POP     de 
+            INC     d 
+            INC     hl 
+            LD      a,d 
+            CP      11 
+            JR      nz,BEGIN_PATH_LOOP 
+
+            LD      A,(PATH_INPUT+$3F) 
+            LD      E,A 
+            LD      d,0 
+            LD      B,START_COL + 1 + 13 
+            LD      HL,PATH_INPUT 
+            ADD     HL,DE ; HL -> points to zero closing of path
+            DEC     HL 
+            LD      A,"/" 
+
+FIND_LAST_SLASH_LOOP:  
+            DEC     HL 
+            DEC     B 
+            CP      (HL) 
+            JR      nz,FIND_LAST_SLASH_LOOP 
+            PUSH    HL 
+            LD      C,START_ROW + 20 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,TRUNCATED_PATH_STR 
+            CALL    INIT_PRINT_STRING 
+            POP     HL 
+            CALL    INIT_PRINT_CSTRING 
+            JP      PRINT_PATH_DONE 
+PWD_FAILED:          
+            LD      HL,PWD_READ_FAILED_STR 
+            JP      INIT_PRINT_STRING 
+
+DRAW_TABLE:          
+            LD      A,($0038) ; store first instruction of RST $38 (IRQ)
+            PUSH    AF 
+            LD      A,$C9 ; and set it RET to ignore it, because of a v2.2 bug
+            LD      ($0038),a 
+
+            LD      BC,START_COL * $100 + START_ROW 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,TOP_HEADER_LINE 
+            CALL    PRINT_STRING 
+            LD      HL,TXT_HEADER_LINE 
+            CALL    PRINT_STRING 
+            LD      HL,MID_HEADER_LINE 
+            CALL    PRINT_STRING 
+
+            LD      C,00 
+
+DRAW_TABLE_LOOP:     
+            PUSH    BC ; store the counter in C
+            LD      A,C 
+
+            LD      BC,START_COL * $100 + START_ROW + 3 
+            ADD     A,C 
+            LD      C,A 
+
+            PUSH    BC ; store the position in BC
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      C,VERTIC_CH 
+            RST     $30 
+            DB      F_EDCHOUT 
+            POP     BC ; pop the position
+
+            LD      A,13 
+            ADD     A,B 
+            LD      B,A 
+
+            PUSH    BC ; mid cross position
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      C,VERTIC_CH 
+            RST     $30 
+            DB      F_EDCHOUT 
+            POP     BC 
+
+            LD      A,6 
+            ADD     A,B 
+            LD      B,A 
+
+            RST     $30 ; no need to store here the row position anymore
+            DB      F_EDCPOS 
+            LD      C,VERTIC_CH 
+            RST     $30 
+            DB      F_EDCHOUT 
+
+            POP     BC ; pop the counter in C
+
+            INC     C 
+            LD      A,$10 
+            CP      C 
+            JR      nz,DRAW_TABLE_LOOP 
+
+            LD      BC,START_COL * $100 + START_ROW + 19 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,BOT1_HEADER_LINE 
+            CALL    PRINT_STRING 
+
+            LD      BC,START_COL * $100 + START_ROW + 20 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      C,VERTIC_CH 
+            RST     $30 
+            DB      F_EDCHOUT 
+            LD      BC,(START_COL + 19) * $100 + START_ROW + 20 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      C,VERTIC_CH 
+            RST     $30 
+            DB      F_EDCHOUT 
+
+            LD      BC,START_COL * $100 + START_ROW + 21 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,BOT2_HEADER_LINE 
+            CALL    PRINT_STRING 
+
+            DI       ; disable interrupts and
+            POP     AF ; restore first instruction of RST $38
+            LD      ($0038),A 
+            RET      
+
+
+; top-left : 89h
+; horiz   : 91h
+; top-right: 99h
+; vert    : 8bh
+; bot-left: 8ah
+; bot-righ: 9ah
+; mid-cros: 8eh
+; top-cros: 8dh
+; left-cr : 8ch
+; right-c : 9ch
+; bot-cros: 9dh
+TOP_LEFT_CH EQU     $89 
+HORIZ_CH    EQU     $9B 
+TOP_RIGHT_CH EQU    $99 
+VERTIC_CH   EQU     $8B 
+BOTT_LEFT_CH EQU    $8A 
+BOTT_RIGHT_CH EQU   $9A 
+MID_CROSS_CH EQU    $8E 
+TOP_CROSS_CH EQU    $8D 
+LEFT_CROSS_CH EQU   $8C 
+RIGHT_CROSS_CH EQU  $9C 
+BOTT_CROSS_CH EQU   $9D 
+
+; TABLE STRINGS
+; .  12 ch     . 5ch . => 20 ch
+; +------------+-----+  TOP
+; |    NAME    | SIZE|
+; +------------+-----+  MID
+; |            |     |  x 16
+; |            |     |
+;    . . . .
+; +------------+-----+  BOTTOM
+; 
+
+
+TOP_HEADER_LINE:     
+            DB      22 
+            DB      TOP_LEFT_CH 
+            FILL    HORIZ_CH,12 
+            DB      TOP_CROSS_CH 
+            FILL    HORIZ_CH,5 
+            DB      TOP_RIGHT_CH 
+            DB      "\r\n" 
+
+TXT_HEADER_LINE:     
+            DB      22 
+            DB      VERTIC_CH 
+            DB      "    NAME    " 
+            DB      VERTIC_CH 
+            DB      " SIZE" 
+            DB      VERTIC_CH 
+            DB      "\r\n" 
+
+MID_HEADER_LINE:     
+            DB      22 
+            DB      LEFT_CROSS_CH 
+            FILL    HORIZ_CH,12 
+            DB      MID_CROSS_CH 
+            FILL    HORIZ_CH,5 
+            DB      RIGHT_CROSS_CH 
+            DB      "\r\n" 
+
+BOT1_HEADER_LINE:    
+            DB      20 
+            DB      LEFT_CROSS_CH 
+            FILL    HORIZ_CH,12 
+            DB      BOTT_CROSS_CH 
+            FILL    HORIZ_CH,5 
+            DB      RIGHT_CROSS_CH 
+            DB      "\r\n" 
+
+BOT2_HEADER_LINE:    
+            DB      22 
+            DB      BOTT_LEFT_CH 
+            FILL    HORIZ_CH,18 
+            DB      BOTT_RIGHT_CH 
+            DB      "\r\n" 
+
+TRUNCATED_PATH_STR:  
+            .PSTR   "[..]" 
+PWD_READ_FAILED_STR:  
+            .PSTR   "PWD read failed!" 
+
+
+PRINT_STATUS_MSG:    
+            PUSH    HL 
+            LD      hl,64*(START_ROW-1+20) + START_COL + $100 
+            LD      de,STATUS_LINE_BACKUP 
+            LD      bc,18 
+            LDIR     
+            XOR     a 
+            LD      (de),a 
+            POP     HL 
+            LD      bc,$100*(START_COL+1) + START_ROW + 20 
+            RST     $30 
+            DB      F_EDCPOS 
+            CALL    INIT_PRINT_STRING 
+            RET      
+
+REVERT_STATUS_MSG:   
+            LD      bc,$100*(START_COL+1) + START_ROW + 20 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,STATUS_LINE_BACKUP 
+            CALL    INIT_PRINT_CSTRING 
+            RET      
+
+
+CDUP_RECORD:         
+            DB      "..          " 
+            DB      0,0,0,0,0 
+
+
+TEST_RECORDS:        
+            DB      "TESTFIL8.TXT" 
+            DB      1,15,15,0,0 
+            DB      "BIGFILE6.TXT" 
+            DB      1,15,15,1,0 
+            DB      "DIRECTO2    " 
+            DB      0,0,0,0,0 
+            DB      "TESTFIL3.TXT" 
+            DB      1,15,15,0,0 
+            DB      "BIGFILE4.TXT" 
+            DB      1,15,15,1,0 
+            DB      "DIRECTO5    " 
+            DB      0,0,0,0,0 
+            DB      "TESTFIL6.TXT" 
+            DB      1,15,15,0,0 
+            DB      "BIGFILE7.TXT" 
+            DB      1,15,15,1,0 
+            DB      "TESTFIL2.TXT" 
+            DB      1,15,15,0,0 
+            DB      "BIGFILE1.TXT" 
+            DB      1,15,15,1,0 
+            DB      "DIRECT10    " 
+            DB      0,0,0,0,0 
+            DB      "TESTFI21.TXT" 
+            DB      1,15,15,0,0 
+            DB      "BIGFIL12.TXT" 
+            DB      1,15,15,1,0 
+            DB      "DIRECT33    " 
+            DB      0,0,0,0,0 
+            DB      "TESTFI11.TXT" 
+            DB      1,15,15,0,0 
+            DB      "BIGFIL15.TXT" 
+            DB      1,15,15,1,0 
+            DB      "BIGFIL09.TXT" 
+            DB      1,15,17,0,0 
+TEST_RECORDS_END:    
+TEST_REC_ADDR:       
+            DW      DIR_DATA 
+            DW      DIR_DATA +  1*17 
+            DW      DIR_DATA +  2*17 
+            DW      DIR_DATA +  3*17 
+            DW      DIR_DATA +  4*17 
+            DW      DIR_DATA +  5*17 
+            DW      DIR_DATA +  6*17 
+            DW      DIR_DATA +  7*17 
+            DW      DIR_DATA +  8*17 
+            DW      DIR_DATA +  9*17 
+            DW      DIR_DATA + 10*17 
+            DW      DIR_DATA + 11*17 
+            DW      DIR_DATA + 12*17 
+            DW      DIR_DATA + 13*17 
+            DW      DIR_DATA + 14*17 
+            DW      DIR_DATA + 15*17 
+            DW      DIR_DATA + 16*17 
+TEST_REC_ADDR_END:   
+;                           1         2         3   3
+TEST_PWD:            ;   1        0         0         0   4
+            .CSTR   "/this/is/a/long/working/directory/" 
+            DB      0,0,0,0,0,0,0,0,0,0,0,0,0 
+            DB      0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,34 
+
+FILL_PWD_WITH_TEST_DATA:  
+            LD      hl,TEST_PWD 
+            LD      DE,PATH_INPUT 
+            LD      BC,$40 
+            LDIR     
+            RET      
+
+FILL_DIR_WITH_TEST_DATA:  
+            LD      HL,TEST_RECORDS 
+            LD      DE,DIR_DATA 
+            LD      BC,TEST_RECORDS_END - TEST_RECORDS 
+            LDIR     
+            LD      HL,17 
+            LD      (DIR_SIZE),HL 
+            LD      HL,TEST_REC_ADDR 
+            LD      DE,DIR_ENTRY_POIS 
+            LD      BC,TEST_REC_ADDR_END - TEST_REC_ADDR 
+            LDIR     
+            RET      
+
+
+MENU_ON_BOOT_STR:    
+            .PSTR   "Enter menu on boot: " 
+MENU_ON_BOOT_YES_STR:  
+            .PSTR   "Yes" 
+MENU_ON_BOOT_NO_STR:  
+            .PSTR   "No " 
+
+
+MENU_HELP_TEXT_STR:  
+;                           1         2         3         4
+;                  123456789012345678901234567890123456789012
+            .CSTR   "Simple File Selection Menu for NanoSD" 
+            .CSTR   "                                IO Card" 
+            .CSTR   "" 
+            .CSTR   "- Use Joy UP/DOWN or key A/Y for moving" 
+            .CSTR   "  the selection up and down!" 
+            .CSTR   "- Use Joy LEFT/RIGHT or key \u081 /: to" 
+            .CSTR   "  move one page up or down!" 
+            .CSTR   "- Use key Return to enter a subdirectory" 
+            .CSTR   "  or to start a .CAS file!" 
+            .CSTR   "- Use SPACE to skip the file selection" 
+            .CSTR   "  during boot up next time." 
+            .CSTR   "- Sort by (S)ize or (N)ame, n(o) sort" 
+            .CSTR   "" 
+            .CSTR   "During boot pressing the ESC will enter" 
+            .CSTR   "this screen" 
+            .CSTR   "                              Have Fun!" 
+            DB      255 
+
+LOAD_STR:            
+            DB      " LOAD ",$22 
+LOAD_STR_END:        
+LOADING_DIRECTORY_STR:  
+            .PSTR   "Loading dir:      " 
+SORTING_BY_NAME_STR:  
+            .PSTR   "Sorting by name..." 
+SORTING_BY_SIZE_STR:  
+            .PSTR   "Sorting by size..." 
+; SORTING_BY_NONE_STR:
+;             .PSTR   "Reverting sort... "
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

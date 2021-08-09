@@ -1,0 +1,95 @@
+; This  ISR should be called only at the boot process a few times until
+; the area of USR-TAB cleared by the OS. When it's done, the ISR updates
+; the EXT0 vector and cleaers itself out of the way.
+; The reason for this, that most of the initialization routines executed
+; AFTER the card's INIT routine.
+
+; INPUT registers
+; A - latest PORT03
+; B - orig PORT03
+; C - IO CARD RAM in U0 (48, 78, A8, D8)
+; AF and BC already pushed onto stack by jumper code
+; 
+; OUTPUT registers
+; C - must contain $03
+; B - must contain the original PORT03_SHADOW value
+; A - must contain the original PORT02_SHADOW value
+
+INTERRUPT_HANDLER:               
+            PUSH    HL 
+            PUSH    DE 
+            LD      a,(KEY_PRESS_IDX) ; filled with non-FF value if LOAD on-the-way
+            CP      $FF 
+            JR      nz,SKIP_REVERT 
+            LD      hl,($0021) ; let's wait until 0021 is zeroed
+            LD      a,h 
+            OR      l 
+            JR      nz,SKIP_KEYBOARD_BUF_FILL
+
+REVERT_ISR:
+            LD      HL,($0000) ; route back ISR
+            LD      ($003e),HL 
+
+            XOR     A ; let's call CLI_MAIN instead of ISR from the jump code
+            LD      H,A 
+            LD      L,C 
+            LD      DE,SUBROUTINTE_CALL - JUMPER_CODE_U0 + 1 + 2 
+            ADD     HL,DE 
+            LD      DE,CLI_MAIN 
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D
+            
+            LD      H,A 
+            LD      L,C 
+            LD      DE,FINISH_JUMPER_CODE - JUMPER_CODE_U0 + 1 + 2 
+            ADD     HL,DE 
+            LD      DE,$0B41 
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D
+            
+            
+            
+            LD      D,A ; let's set EXT0 to our jump code
+            LD      E,C 
+            INC     DE 
+            INC     DE 
+            LD      HL,$0021 
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D
+            
+            ld a,$FF
+            ld (KEY_PRESS_IDX),A
+            
+            
+            jr SKIP_KEYBOARD_BUF_FILL
+
+SKIP_REVERT:             
+            LD      A,($0BE5) 
+            OR      A ; check if kbd already read
+            JR      nz,SKIP_KEYBOARD_BUF_FILL ; if not - jump
+            DEC A
+            LD      ($0BE5),A 
+            LD      A,(KEY_PRESS_IDX) 
+            LD      HL,AUTOLOAD_STR_BUFFER 
+            ADD     A,L 
+            LD      L,A 
+            LD      a,(hl) 
+            LD      ($0BE9),A 
+            CP $0D                      ; last char check
+            JR      z,REVERT_ISR 
+            LD      HL,KEY_PRESS_IDX 
+            INC     (HL) 
+
+SKIP_KEYBOARD_BUF_FILL:  
+            OUT     ($07),A ; acknowledge INT req
+            POP     DE 
+            POP     HL 
+            LD      A,B 
+            LD      (PORT03_SHADOW),A 
+            LD      C,$03 
+            LD      A,(PORT02_SHADOW) 
+INTERRUPT_HANDLER_EXIT:  
+            RET      

@@ -1,0 +1,225 @@
+INIT:                
+            PUSH    IX ; IX points to the 30h bytes long buffer assigned to this IO card (40h, 70h, A0h, D0h)
+            POP     HL ; HL= IX
+            LD      A,L 
+            SUB     $10 
+            AND     $C0 ; 0x00, 0x40, 0x80, 0xc0
+            LD      (PORT03_SHADOW),A 
+            RRCA     
+            RRCA     ; 0x00, 0x10, 0x20, 0x30
+            ADD     A,$10 
+            LD      (IX+8),A 
+            RRCA     
+            RRCA     
+            RRCA     
+            RRCA     
+            SUB     $01 
+            OR      $80 
+;           CAS read routines
+            LD      (CAS_IN_HW_REDIRECT_ADDR),A 
+;           CAS write routines
+            LD      (CAS_OUT_HW_REDIRECT_ADDR),A 
+
+            LD      a,$f0 ; U0-U1-U2-EXT
+            LD      (PORT02_SHADOW),A 
+
+            LD      a,($0B22) 
+            PUSH    AF 
+
+            LD      a,($0B21) 
+            INC     a 
+            JR      z,SKIPPED_HARD_SETUP 
+
+            LD      a,$FF ; pressing reset during menu/status header -> COLD RESET
+            LD      ($0B22),A 
+
+; setup a fake EXT0
+            LD      A,$48 
+            LD      ($0021),A 
+            LD      A,$0b 
+            LD      ($0022),A 
+            LD      A,$FF 
+            LD      (KEY_PRESS_IDX),A 
+
+            CALL    PRINT_VERSION ; interrupts are disabled after this
+
+            CALL    GET_MENUSTATUS 
+            LD      (SHOW_MENU_ON_BOOT),A 
+            OR      A 
+            JR      z,WAIT_FOR_LOOP 
+
+INIT_SHOW_MENU:      
+            CALL    SHOW_MENU 
+
+            JR      SKIP_WAIT 
+
+WAIT_FOR_LOOP:       
+            LD      BC,$100 * (64-37) + $03 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,PRESS_ESC_STR 
+            CALL    INIT_PRINT_STRING 
+
+            LD      HL,2000 
+            LD      A,(PORT03_SHADOW) 
+            AND     $F0 
+            OR      $07 
+            OUT     ($03),A 
+WAIT_INIT_LOOP:      
+            CALL    WAIT_1ms 
+            IN      A,($58) 
+            BIT     3,A 
+            JR      z,INIT_ESC_PRESSED 
+            DEC     HL 
+            LD      A,H 
+            OR      L 
+            JR      nz,WAIT_INIT_LOOP 
+
+SKIP_WAIT:           
+            CALL    SETUP_ISR 
+
+SKIPPED_HARD_SETUP:  
+            POP     AF 
+            LD      ($0B22),A 
+
+            RET      
+
+INIT_ESC_PRESSED:    
+            CALL    WAIT_1mS 
+            IN      A,($58) 
+            BIT     3,A 
+            JR      z,INIT_ESC_PRESSED 
+            LD      A,(PORT03_SHADOW) 
+            OUT     ($03),A 
+
+            LD      BC,$100 * (64-37) + $03 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,PRESS_ESC_STR 
+            LD      B,37 
+            LD      C,$20 
+CLR_PRESS_ESC_LOOP:  
+            PUSH    BC 
+            CALL    INIT_PRINT_CHAR 
+            POP     BC 
+            DJNZ    CLR_PRESS_ESC_LOOP 
+
+            JR      INIT_SHOW_MENU 
+
+
+PRINT_VERSION:       
+            CALL    INIT_SCREEN 
+            LD      C,00 ;   VID-MODE , 2-col
+            RST     $30 
+            DB      F_VIDMODE 
+
+            LD      BC,$0101 
+            RST     $30 
+            DB      F_EDCPOS 
+            LD      HL,SDISK_VERSION_STR 
+            CALL    INIT_PRINT_STRING 
+            LD      hl,SDISK_BYSANYI_STR 
+            LD      C,$01 
+            LD      A,64 
+            SUB     (HL) 
+            LD      B,A 
+            RST     $30 
+            DB      F_EDCPOS 
+
+            LD      HL,SDISK_BYSANYI_STR 
+            CALL    INIT_PRINT_STRING 
+
+            RET      
+
+INIT_SCREEN:         
+            LD      a,01 
+            LD      (INK_COLOR),a ; ink
+            LD      a,0 
+            LD      (PAPER_COLOR),a ; paper
+            LD      a,00 
+            LD      ($0b73),a ; resolution
+            LD      a,00 
+            LD      ($0b4f),a ; background
+
+; white for characters
+            LD      a,$00 
+            OUT     ($60),a 
+            LD      a,$50 ; 
+            OUT     ($61),a 
+            LD      a,$10 
+            OUT     ($62),a 
+            LD      a,$ff 
+            OUT     ($62),a 
+            RET      
+
+SETUP_ISR:           
+; COPY_EXT_JUMP:
+            LD      de,$000A 
+            ADD     IX,de 
+            PUSH    IX ; 004a, 007a, 00aa, 00da
+            POP     DE 
+            PUSH    de ; 004a, 007a, 00aa, 00da
+            PUSH    de ; 004a, 007a, 00aa, 00da
+            LD      HL,JUMPER_CODE 
+            LD      BC,JUMPER_CODE_END - JUMPER_CODE 
+            LDIR     
+
+            POP     DE 
+            PUSH    DE 
+            DEC     DE 
+            DEC     DE ; IO Base addr in mem (0048, 0078, 00A8, 00D8)
+            LD      A,E 
+            LD      HL,IO_BASE_LDC + 1 - JUMPER_CODE_U0 + 2 
+            ADD     HL,DE 
+            LD      (HL),A 
+
+            LD      HL,($003e) ; let's store the original ISR jump addr
+            LD      ($0000),HL 
+
+            POP     DE 
+            PUSH    DE 
+            LD      HL,FINISH_JUMPER_CODE + 1 - JUMPER_CODE_U0 
+            ADD     HL,DE 
+            LD      DE,($0000) 
+            LD      (HL),E 
+            INC     HL 
+            LD      (HL),D 
+
+            POP     HL ; start addr of U0 jump, but for ISR we skip di and push af.
+            INC     HL 
+            INC     HL 
+            LD      ($003e),HL 
+
+            POP     HL ; IX  - 004A, 007A, 00aA, 00dA
+            LD      A,L 
+            SUB     $10 
+            AND     $C0 ; 0x00, 0x40, 0x80, 0xc0
+            LD      DE,EXT_SELECTION + 1 - JUMPER_CODE_U0 
+            ADD     HL,DE 
+            OR      (HL) 
+            LD      (HL),A 
+            RET      
+
+GET_MENUSTATUS:      
+            LD      C,PARAM_MENUONBOOT 
+            RST     $30 
+            DB      F_GETPARAM ; READ PARAM
+            OR      A 
+            JR      nz,PARM_READ_DEFAULT 
+            LD      A,E 
+            OR      A 
+            JR      nz,PARM_READ_DEFAULT 
+            RET      
+PARM_READ_DEFAULT:   
+            LD      A,1 ; default value: show menu
+            RET      
+
+
+
+
+
+
+
+
+
+

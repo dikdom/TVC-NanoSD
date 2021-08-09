@@ -1,0 +1,324 @@
+WAIT_1MS:            ; (17T to reach here)  3125T to wait
+            PUSH    af ; 11T                   77T is the frame
+            PUSH    bc ; 11T
+            LD      b,180 ; 6T    179*17 + 12 => Total wait time is 3132T
+WAIT_1MS_LOOP:       ; 
+            NOP      ; 4T
+            DJNZ    wait_1ms_loop ; 13T on jump, 8T on not jump
+            POP     bc ; 11T
+            POP     af ; 11T
+            RET      ; 10T
+
+WAIT_100US:          ; (17T to reach here)  312T to wait
+            PUSH    af ; 11T                   77T is the frame
+            PUSH    bc ; 11T
+            LD      b,14 ; 6T    13*17 + 12 => Total wait time is 310T
+WAIT_100US_LOOP:     ; 
+            NOP      ; 4T
+            DJNZ    wait_100us_loop ; 13T on jump, 8T on not jump
+            POP     bc ; 11
+            POP     af ; 11T
+
+WAIT_27T:            ; CALL and RET is 17T + 10T
+            RET      
+WAIT_39T:            
+            JR      WAIT_27T 
+
+
+;   sets NOT VERIFY (00 into 0BF1) and checks if 0BF3 is 0
+OPEN_FILE_4READ_CHECK:  
+            XOR     a 
+            LD      (VERIFY_ONGOING),a 
+            LD      a,(OPEN_FOR_READ_FILE_TYPE) 
+            JR      FILE_CHECK 
+OPEN_FILE_4WRITE_CHECK:  
+            LD      a,(OPEN_FOR_WRITE_FILE_TYPE) ; open for write
+FILE_CHECK:          
+            OR      a 
+            LD      a,$E9 
+            RET      
+
+FILE_READ_CHECK:     
+            LD      HL,$0D0B 
+            LD      a,(hl) 
+            OR      a 
+            RET     z 
+            LD      (hl),$ec 
+            RET      
+
+INIT_PRINT_STRING:   ; on v2.2 ROM ignores INT reqs enabled
+; by the ED-CH-OUT routine and disables INTs
+; on return
+            LD      A,(0038h) ; INT vector address
+            PUSH    AF 
+            LD      A,$C9 ; RET instruction
+            LD      (0038h),A 
+            CALL    PRINT_STRING 
+            DI       ; let's disable INT, during INIT it is supposed to be disabled
+            POP     AF 
+            LD      (0038h),A ; restore original value
+            RET      
+
+
+INIT_PRINT_16BIT_DECIMAL_NUMBER:  
+            LD      A,(0038h) ; INT vector address
+            PUSH    AF 
+            LD      A,$C9 ; RET instruction
+            LD      (0038h),A 
+            CALL    PRINT_16BIT_DECIMAL_NUMBER 
+            DI       ; let's disable INT, during INIT it is supposed to be disabled
+            POP     AF 
+            LD      (0038h),A ; restore original value
+            RET      
+
+INIT_PRINT_HEX_BYTE:  
+            LD      A,(0038h) ; INT vector address
+            PUSH    AF 
+            LD      A,$C9 ; RET instruction
+            LD      (0038h),A 
+            LD      a,c 
+            CALL    PRINT_HEX_BYTE 
+            DI       ; let's disable INT, during INIT it is supposed to be disabled
+            POP     AF 
+            LD      (0038h),A ; restore original value
+            RET      
+
+INIT_PRINT_CSTRING:  
+            LD      A,(0038h) ; INT vector address
+            PUSH    AF 
+            LD      A,$C9 ; RET instruction
+            LD      (0038h),A 
+            CALL    PRINT_CSTRING 
+            DI       ; let's disable INT, during INIT it is supposed to be disabled
+            POP     AF 
+            LD      (0038h),A ; restore original value
+            RET      
+
+INIT_PRINT_CHAR:     ; on v2.2 ROM ignores INT reqs enabled
+; by the ED-CH-OUT routine and disables INTs
+; on return
+            PUSH    AF 
+            LD      A,(0038h) ; INT vector address
+            PUSH    AF 
+            LD      A,$C9 ; RET instruction
+            LD      (0038h),A 
+            RST     $30 
+            DB      F_EDCHOUT 
+            DI       ; let's disable INT, during INIT it is supposed to be disabled
+            POP     AF
+            LD      (0038h),A ; restore original value
+            POP     AF
+            RET
+
+
+PRINT_STRING:        
+            LD      b,(hl) 
+PRINT_STRING_LOOP:   
+            INC     hl 
+            PUSH    bc 
+            PUSH    hl 
+            LD      c,(hl) 
+            RST     30h 
+            DB      $21 
+            POP     hl 
+            POP     bc 
+            DJNZ    PRINT_STRING_LOOP 
+            RET      
+
+PRINT_CSTRING:       
+            LD      c,(hl) 
+            XOR     a 
+            CP      c 
+            JR      z,CSTRING_DONE 
+            PUSH    hl 
+            RST     30h 
+            DB      $21 
+            POP     hl 
+            INC     hl 
+            JR      PRINT_CSTRING 
+CSTRING_DONE:        
+            RET      
+
+PRINT_NEWLINE:       
+            LD      hl,NEWLINE_STR 
+            JR      PRINT_STRING 
+NEWLINE_STR:         
+            .PSTR   "\r\n" 
+
+PRINT_HEX_BYTE:      
+            PUSH    BC 
+            PUSH    AF 
+            RRCA     
+            RRCA     
+            RRCA     
+            RRCA     
+            AND     $0F 
+            CALL    PRINT_HEX_DIGIT 
+            POP     AF 
+            AND     $0F 
+            CALL    PRINT_HEX_DIGIT 
+            POP     BC 
+            RET      
+PRINT_HEX_DIGIT:     
+            CP      10 
+            JR      nc,ALPHA_CHARS 
+            ADD     A,"0" 
+            JR      PRINT_CHAR 
+ALPHA_CHARS:         
+            ADD     A,"A" - 10 
+PRINT_CHAR:          
+            LD      C,A 
+            RST     30h 
+            DB      F_EDCHOUT
+            RET      
+
+GET_DECIMAL_DIGIT:   
+            INC     C 
+            SBC     HL,DE 
+            JR      nc,GET_DECIMAL_DIGIT 
+            DEC     C 
+            ADD     HL,DE 
+            RET      
+
+PRINT_16BIT_DECIMAL_NUMBER:  
+            PUSH    AF 
+            PUSH    BC 
+            PUSH    DE 
+            PUSH    HL 
+            LD      B,0 
+            LD      c,0 
+PRINT_DECIMAL_LOOP:  
+            PUSH    bc 
+            LD      a,c 
+            RLC     a ; MUL by 2
+            LD      de,DECIMAL_NUMS 
+            ADD     a,e 
+            LD      e,a 
+            LD      a,$00 
+            ADC     a,d 
+            LD      d,a 
+            PUSH    hl 
+            EX      de,hl 
+            LD      e,(hl) 
+            INC     hl 
+            LD      d,(hl) 
+            POP     hl 
+
+            LD      c,0 
+            CALL    GET_DECIMAL_DIGIT 
+            LD      a,e 
+            CP      1 
+            JR      z,PRINT_DIGIT ; last digit, must print even on zero
+            LD      A,B 
+            OR      C 
+            JR      z,SKIP_DIGIT_PRINT 
+PRINT_DIGIT:         
+            INC     B 
+            LD      A,C 
+            ADD     a,"0" 
+            PUSH    bc 
+            CALL    PRINT_CHAR 
+            POP     bc 
+            JR      SKIP_SPACE_PRINT 
+SKIP_DIGIT_PRINT:    
+            LD      a," " 
+            PUSH    bc 
+            CALL    PRINT_CHAR 
+            POP     bc 
+SKIP_SPACE_PRINT:    
+            LD      a,b 
+            POP     bc 
+            INC     c 
+            LD      b,a 
+            LD      a,c 
+            CP      5 
+            JR      nz,PRINT_DECIMAL_LOOP 
+
+            POP     HL 
+            POP     DE 
+            POP     BC 
+            POP     AF 
+            RET      
+
+
+DECIMAL_NUMS:        
+            DW      10000 
+            DW      1000 
+            DW      100 
+            DW      10 
+            DW      1 
+; fills memory starting from HL with BC 0 bytes
+CLEAN_MEMORY:        
+            LD      (hl),00 
+            INC     hl 
+            DEC     bc 
+            LD      a,b 
+            OR      c 
+            JR      nz,clean_memory 
+            RET      
+
+JUMPER_CODE:         
+            .PHASE  $004a 
+JUMPER_CODE_U0:      
+; This is the EXT0 entry point
+            DI       
+            PUSH    AF ; needed in EXT0 because of the ISR exit routine
+; This is the ISR entry point
+            LD      A,$f0 ; U0-U1-U2-EXT
+            OUT     ($02),A 
+            PUSH    BC 
+            LD      A,(PORT03_SHADOW) 
+            LD      B,A 
+            AND     $0f 
+EXT_SELECTION:       
+            OR      $00 
+            OUT     ($03),A 
+IO_BASE_LDC:         
+            LD      C,$00 ; RESIDENT in RAM, set by INIT to 48, 78, A8, D8
+; A - latest PORT03
+; B - orig PORT03
+; C - IO CARD RAM in U0
+
+SUBROUTINTE_CALL:    
+            CALL    INTERRUPT_HANDLER 
+; C - must contain $03
+; B - must contain the original PORT03_SHADOW value
+; A - must contain the original PORT02_SHADOW value
+            OUT     (C),B 
+            POP     BC 
+            PUSH    AF 
+            LD      A,$70 ; U0-U1-U2-SYS
+            OUT     ($02),A 
+            POP     AF 
+FINISH_JUMPER_CODE:  
+            JP      $0b41 ; jump addr to be modified by ISR
+            .DEPHASE  
+JUMPER_CODE_END:     
+
+
+
+
+            IF      debug=1 
+STRIPES:             
+            LD      hl,$0000 
+            PUSH    af 
+            PUSH    hl 
+STRIPES_LOOP:        
+            LD      a,l 
+            OUT     (0),a 
+            DEC     hl 
+            LD      a,h 
+            OR      l 
+            JR      nz,stripes_loop 
+            POP     hl 
+            POP     af 
+            RET      
+            ENDIF    
+
+            .MACRO  debug_stripe 
+            IF      debug = 1 
+            CALL    stripes 
+            ENDIF    
+            .ENDM    
+
+

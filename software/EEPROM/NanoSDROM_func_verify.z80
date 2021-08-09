@@ -1,0 +1,32 @@
+VERIFY_HANDLER:      
+            CALL    OPEN_FILE_4READ_CHECK 
+            RET     z 
+BLOCKVERIFY_LOOP:      
+            PUSH    BC 
+            PUSH    DE 
+            CALL    CHARGET_NOCHECK 
+            POP     DE 
+            JR      nz,READ_FAILED 
+            LD      L,C 
+            LD      A,(DE) 
+            CP      L 
+            JR      nz,VERIFY_FAILED 
+
+            INC     DE 
+            POP     BC 
+            DEC     BC 
+            LD      A,B 
+            OR      C
+            JR      nz,BLOCKVERIFY_LOOP 
+            XOR     A 
+            RET      
+VERIFY_FAILED:       
+            POP     BC 
+            LD      a,$F0 
+            OR      A 
+            RET
+READ_FAILED:
+            POP     BC 
+            LD      a,$F1 
+            OR      A 
+            RET

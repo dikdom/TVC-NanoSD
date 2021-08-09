@@ -1,0 +1,186 @@
+RECEIVED_FILENAME EQU $0BF5 
+
+OPEN_HANDLER:        
+            OR      A ; checking bit7
+            JP      P,OPEN_WRITE 
+OPEN_READONLY:       
+            CALL    OPEN_FILE_4READ_CHECK ; is there a file open for read?
+            LD      A,$EB 
+            RET     nz ; there is, error code is EB
+            CALL    OPEN_FILE_4WRITE_CHECK ; is there a file open for write?
+            LD      A,$EB 
+            RET     nz ; there is, error code is EB
+
+            PUSH    DE 
+            LD      HL,OPEN_FOR_READ_FILE_TYPE 
+            LD      BC,$0121 
+            CALL    CLEAN_MEMORY ; clean 0BF3 - 0D13
+
+            CALL    PRINT_NEWLINE ; new line
+            LD      HL,SEARCHING_STR 
+            CALL    PRINT_STRING ; Print "Searching"
+            CALL    PRINT_NEWLINE ; new line
+
+            POP     DE 
+            PUSH    DE 
+
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_OPEN_RO 
+            OUT     (C),A ; send OPEN_RO command
+            CALL    SEND_FILENAME 
+            CALL    wait_1ms 
+            IN      A,(C) ; let's drop this intermediate value
+            CALL    RECEIVE_FILENAME 
+            POP     DE 
+            OR      A 
+            JR      z,OPEN_OK 
+OPEN_NOK:            
+            PUSH    AF 
+            LD      HL,FILE_NOT_FOUND_STR
+            PUSH    DE
+            CALL    PRINT_STRING 
+            POP     HL
+            CALL    PRINT_STRING 
+            CALL    PRINT_NEWLINE ; new line
+            POP     AF 
+            RET      
+
+OPEN_OK:             
+            LD      HL,FILE_FOUND_STR 
+            CALL    PRINT_STRING 
+            LD      HL,RECEIVED_FILENAME 
+            CALL    PRINT_STRING 
+            CALL    PRINT_NEWLINE ; new line
+            LD      DE,RECEIVED_FILENAME 
+            LD      HL,OPEN_FOR_READ_FILE_TYPE ; should not be zero, only 1 file may be open at a time for reading
+            LD      A,$11 
+            LD      (HL),A 
+            XOR     A 
+            LD      (AVAILABLE_FOR_GET),A ; first read should send a GETDATA
+            XOR     A 
+            RET      
+
+SEND_FILENAME:       ; 17T - just the CALL instruction
+            LD      A,(DE) ; 7T
+            OR      A ; 4T
+            JR      z,FILENAME_ZERO_TERMINATE ; 12T on jump, 7T on
+            LD      B,A ; 7T - length of file
+; There are 42T between OPEN command and filename OUT's
+FILENAME_SEND_LOOP:  
+            CALL    WAIT_27T 
+            INC     DE ; 6T
+            LD      A,(DE) ; 7T
+            OUT     (C),A 
+            DJNZ    FILENAME_SEND_LOOP ; 13T on jump, 8T otherwise
+            NOP      ; let's have a 4T wait here
+FILENAME_ZERO_TERMINATE:  
+            CALL    wait_27T 
+            XOR     A ; 4T
+            OUT     (C),A 
+            RET      ; 10T
+
+RECEIVE_FILENAME:    
+; let's wait longer - 1 ms - between INs to give time to Nano to process
+; the open the file..
+            CALL    WAIT_1ms 
+            IN      A,(C) 
+            JP      P,COPY_CHARS ; 10T - positive response, not an errorcode
+            CP      RETVAL_DATA_NOT_READY_YET ; 7T
+            JR      z,RECEIVE_FILENAME ; 12T if jump, 7T otherwise
+            CP      RETVAL_WAITING_FOR_INPUT ; 7T
+            JR      z,RECEIVE_FILENAME ; 12T if jump, 7T otherwise
+            LD      A,$ED 
+            RET      
+COPY_CHARS:          
+            LD      HL,RECEIVED_FILENAME ; 10T
+            LD      (HL),A ; 7T
+            LD      B,A ; 7T
+            JR      z,RECEIVE_FILE_SIZE ; should not happen, Nano always send back some filename!
+COPY_CHARS_LOOP:     
+            INC     HL ; 6T
+            IN      A,(C) 
+            LD      (HL),A ; 7T
+            CALL    WAIT_27T ; 27T
+            DJNZ    COPY_CHARS_LOOP ; 13T on jump
+
+RECEIVE_FILE_SIZE:   
+            LD      HL,REMAINING_BYTES ; 10T
+            LD      b,4 
+FILE_SIZE_LOOP:      
+            IN      A,(C) ; 
+            LD      (HL),A ; 7T
+            INC     HL ; 4T
+            CALL    WAIT_27T ; 27T
+            DJNZ    FILE_SIZE_LOOP ; 13T
+FINISHED_COPY_CHARS:  
+            XOR     A 
+            RET      
+
+
+OPEN_WRITE:      
+            debug_stripe
+; Nano SD cannot open two different file even for write and for read...
+            CALL    OPEN_FILE_4READ_CHECK ; is there a file open for read?
+            LD      A,$EB 
+            RET     nz ; there is, error code is EB
+            CALL    OPEN_FILE_4WRITE_CHECK ; is there a file open for write?
+            LD      A,$EC 
+            RET     nz ; there is, error code is EB
+
+;ok, so there is no open file
+            debug_stripe
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_CREATE 
+            OUT     (C),A 
+            CALL    WAIT_27T 
+            CALL    WAIT_27T
+            LD      a,(DE)
+            ld      B,A
+            OUT     (C),A
+            OR      A 
+            JR      z,FILE_NAME_SENT 
+            INC     DE 
+SEND_SAVEFILENAME_LOOP:  
+            LD      A,(DE) 
+            OUT     (C),a 
+            INC     DE 
+            CALL    WAIT_27T 
+            DJNZ    SEND_SAVEFILENAME_LOOP 
+FILE_NAME_SENT:      
+            CALL    WAIT_27T 
+            LD      A,(BUFFER) ; let's send the buffer type also (buffered, non-buffered)
+            OR      A 
+            LD      A,$01 
+            JR      nz,SKIP_TO_BUFFER_SET
+            LD      A,$11 
+SKIP_TO_BUFFER_SET:     
+            LD      (OPEN_FOR_WRITE_FILE_TYPE),A 
+            LD      ($0E2F),A 
+            OUT     (C),A 
+            CALL    wait_100us 
+            IN      A,(C) ; let's drop the first response.
+CREATE_FILE_LOOP:    
+            CALL    wait_100us 
+            IN      A,(C) 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,CREATE_FILE_LOOP 
+            CP      RETVAL_CREATE_FAILED 
+            JR      z,CREATE_FAILED 
+            CP      RETVAL_CREATE_OK 
+            JR      z,CREATE_OK 
+            JR      SKIP_CREATE_FAILED_ERROR_CODE 
+CREATE_FAILED:       
+            LD      A,$ED 
+SKIP_CREATE_FAILED_ERROR_CODE:  
+            OR      A 
+            RET      
+CREATE_OK:           
+            XOR     A 
+            RET      
+            
+SEARCHING_STR:       
+            .PSTR   "Searching" 
+FILE_FOUND_STR:      
+            .PSTR   "Found: " 
+FILE_NOT_FOUND_STR:  
+            .PSTR   "Not Found: " 

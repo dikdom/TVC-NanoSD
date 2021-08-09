@@ -1,0 +1,43 @@
+; INPUT
+;   DE: pointer to a min 65 byte length buffer
+; OUTPUT:
+;   A:
+;     - 00: OK, buffer filled with a null terminated string
+;     - ED: ERR, getting PWD failed
+;   DE points a zero terminated string, max 63 characters
+
+PWD_HANDLER:         
+.block pwd
+            PUSH    BC 
+            PUSH    DE 
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_GETCDIR 
+            OUT     (C),A 
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop th first response
+PWD_LOOP:            
+            CALL    WAIT_100us 
+            IN      A,(C) 
+            JP      p,PWD_READY ; 10T
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,PWD_LOOP 
+            JR      PWD_ERROR 
+PWD_READY:           
+            LD      B,A ; 4T
+PWD_READ_LOOP:       
+            CALL    WAIT_27T 
+            IN      A,(C) 
+            LD      (DE),A 
+            INC     DE 
+            DJNZ    PWD_READ_LOOP 
+            XOR     A 
+            LD      (DE),A 
+PWD_EXIT:            
+            POP     DE 
+            POP     BC 
+            RET      
+PWD_ERROR:           
+            LD      A,$ED 
+            JR      PWD_EXIT 
+
+.endblock

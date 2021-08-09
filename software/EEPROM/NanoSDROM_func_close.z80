@@ -1,0 +1,56 @@
+CLOSE_HANDLER:       
+            JP      p,CLOSE_FOR_WRITE 
+            CALL    OPEN_FILE_4READ_CHECK ; is there a file open for read?
+            LD      A,$EB 
+            RET     z ; there is not, error code is EB
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_CLOSE_RO 
+            OUT     (C),A 
+            CALL    wait_100us ; let's leave time for ISR in Nano
+            IN      A,(C) ; drop the first value from register
+            XOR     A 
+            LD      (OPEN_FOR_READ_FILE_TYPE),A 
+            LD      ($0D0C),A 
+CLOSE_LOOP:          
+            CALL    wait_100us ; 
+            IN      A,(C) 
+            CP      RETVAL_CLOSE_OK 
+            JR      z,CLOSE_OK 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,CLOSE_LOOP 
+            LD      A,$EC 
+            JR      CLOSE_DONE 
+CLOSE_OK:            
+            XOR     A 
+CLOSE_DONE:          
+            RET      
+
+CLOSE_FOR_WRITE:     
+            CALL    OPEN_FILE_4WRITE_CHECK ; is there a file open for write?
+            LD      A,$00 
+            RET     z ; there is not, no error, but let's leave now
+            LD      (OPEN_FOR_WRITE_FILE_TYPE),A 
+
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_CLOSEWRITE 
+            OUT     (C),A 
+            CALL    wait_100us 
+            IN      A,(C) ; let's drop the first response
+WAIT_FOR_CLOSERW:    
+            CALL    WAIT_100us 
+            IN      A,(C) 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,WAIT_FOR_CLOSERW 
+            CP      RETVAL_CLOSE_OK 
+            JR      z,CLOSERW_OK 
+            CP      RETVAL_CLOSE_FAILED 
+            JR      z,CLOSERW_FAILED 
+            JR      SKIP_CLOSERW_ERRCODE 
+CLOSERW_FAILED:      
+            LD      a,$EC 
+SKIP_CLOSERW_ERRCODE:  
+            OR      A 
+            RET      
+CLOSERW_OK:          
+            XOR     A 
+            RET      

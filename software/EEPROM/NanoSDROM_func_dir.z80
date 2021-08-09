@@ -1,0 +1,74 @@
+; To obtain the directory list of the current path from nano
+; DIRFIRST must be called first (bit 7 is irrelevant). Check its return value, 
+; then call DIRNEXT (bit 7 must be set) in loop - checking its retval. If 
+; bit 7 is clear during DIRNEXT call, the directory read iteration is broken, 
+; other command can be sent to Nano without iterating fully through the 
+; directory.
+; 
+; INPUT
+;    - direction bit (bit 7) shall be set on function code
+;      - if it is clear on DIRNEXT, that will close the directory read iteration
+;    - DE: pointer to a 17 bytes long directory buffer, where the data is copied
+; OUTPUT
+;    - A: $F0 Failed directory read
+;         $00 Structure filled with data
+;         $01 End of list reached
+;         $80+ unhandled error code - should not leak back to enduser..
+; 
+; 
+; Directory record structure:
+; - 12 bytes file name (max 8.3, right padded with SPACE)
+; - 1 byte file type where 00 is directory, 01 is file
+; - 4 bytes file length (09012345h long file length is stored in the following 
+;   order: 45h 23h 01h 09h )
+
+
+DIRFIRST_HANDLER:    
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_LIST 
+            OUT     (C),A 
+            CALL    wait_1ms 
+            IN      A,(C) ; drop the first response!
+DFH_DIR_REPLY_LOOP:  
+            CALL    wait_100us 
+            IN      A,(C) 
+            CP      RETVAL_OK 
+            JR      z,DFH_PROCESS_ONE_DIR_REC 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,DFH_DIR_REPLY_LOOP 
+            CP      RETVAL_BUFFER_UNDERRUN 
+            JR      z,DFH_DIR_REPLY_LOOP 
+            CP      RETVAL_END_OF_LIST 
+            JP      z,DFH_END_OF_DIR_ENTRY
+            RET     ; no PUSH DE yet      
+DFH_PROCESS_ONE_DIR_REC:  
+            PUSH    DE 
+            LD      B,17 
+DFH_DIR_ENTRY_LOOP:  
+            CALL    wait_39T 
+            IN      A,(C) 
+            LD      (DE),A 
+            INC     DE 
+            DJNZ    DFH_DIR_ENTRY_LOOP 
+            XOR     A
+            POP     DE 
+            RET      
+DFH_END_OF_DIR_ENTRY:
+            ld a,1
+            RET ; NO PUSH DE YET
+
+DIRNEXT_HANDLER:
+            jp      p,DIRNEXT_BREAK
+            LD      A,SDISK_NANO_CMD_ACKLIST 
+            LD      C,(IX+0) 
+            OUT     (C),A 
+            CALL    wait_100us 
+            IN      A,(C) ; let's drop this one
+            JP      DFH_DIR_REPLY_LOOP 
+DIRNEXT_BREAK:
+            LD      A,$FF
+            LD      C,(IX+0) 
+            OUT     (C),A 
+            CALL    wait_100us 
+            xor a
+            ret

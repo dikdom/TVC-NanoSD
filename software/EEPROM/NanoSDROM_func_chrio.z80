@@ -1,0 +1,125 @@
+CHARIO_HANDLER:      
+            JP      p,CHAR_OUT 
+            CALL    OPEN_FILE_4READ_CHECK 
+            RET     z 
+; check 0D0B, for the last error
+            CALL    FILE_READ_CHECK 
+            RET     nz 
+            LD      A,(BORDER_COLOR) ; 13T
+            LD      B,2 ; 7T
+            AND     1 ; 7T
+            JR      z,CHARGET_NOCHECK ;12T
+            LD      B,0 ; 7T
+CHARGET_NOCHECK:     
+            LD      C,(IX+0) 
+            LD      HL,AVAILABLE_FOR_GET 
+            LD      A,(HL) ; 7T
+CHECK_BUF_LEN:       
+            OR      A ; 4T
+            JR      nz,GET_NEXT_CHAR ; 12T on jr, 7T on not jr
+; first time data request: GETDATA
+INITIATE_FILL_NANO_BUFFER:  
+            LD      A,(BORDER_COLOR) 
+            SUB     B 
+            OUT     ($00),A 
+            LD      A,SDISK_NANO_CMD_GETDATA 
+            OUT     (C),A 
+            CALL    WAIT_100us 
+            IN      A,(C) ; let's drop the first response
+
+CHARINPUT_CMD_LOOP:  
+            CALL    WAIT_100us ; let's give some time to Nano to fill len + n byts in its buffer
+            IN      A,(C) 
+            JP      p,DATA_AVAILABLE 
+            CP      RETVAL_END_OF_FILE 
+            JR      z,END_OF_FILE_READ 
+            CP      RETVAL_BUFFER_UNDERRUN 
+            JR      z,CHARINPUT_CMD_LOOP 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,CHARINPUT_CMD_LOOP 
+END_OF_FILE_ERROR:   
+            LD      A,$EE 
+            LD      ($0D0B),A 
+END_OF_FILE_READ:    
+            LD      A,$FD 
+            LD      (END_OF_FILE),A 
+            OR      A 
+            JR      CHAR_IN_DONE 
+DATA_AVAILABLE:      
+            LD      (HL),A 
+            JR      CHECK_BUF_LEN ; in case the length of the buffer is 0, but there is
+GET_NEXT_CHAR:       
+            LD      A,(BORDER_COLOR) 
+            ADD     A,B 
+            OUT     ($00),A 
+            DEC     (HL) 
+            IN      A,(C) 
+            LD      C,A 
+; LOW 16 bits (2 bytes)
+            LD      HL,(REMAINING_BYTES) 
+            DEC     HL 
+            LD      (REMAINING_BYTES),HL 
+            LD      A,L 
+            OR      H 
+            JR      nz,CHAR_IN_OK_DONE 
+; HIGH 16 bits (2 bytes)
+;           upper two bytes are decremented one tick earlier
+            LD      HL,(REMAINING_BYTES+2) 
+            DEC     HL 
+            LD      (REMAINING_BYTES+2),HL 
+            LD      A,L 
+            AND     H 
+            CP      $FF 
+            JR      nz,CHAR_IN_OK_DONE 
+            LD      A,$FF 
+            LD      (END_OF_FILE),A 
+CHAR_IN_OK_DONE:     
+            XOR     A 
+CHAR_IN_DONE:        
+            PUSH    AF 
+            LD      A,(BORDER_COLOR) 
+            OUT     ($00),A 
+            POP     AF 
+            RET      
+
+
+CHAR_OUT:            
+            CALL    OPEN_FILE_4WRITE_CHECK 
+            RET     z 
+            LD      A,C 
+            LD      C,(IX+0) 
+            LD      B,SDISK_NANO_CMD_PUTDATA 
+            OUT     (C),B 
+            CALL    WAIT_27T 
+            CALL    WAIT_27T 
+            LD      B,1 
+            OUT     (C),B 
+            CALL    WAIT_27T 
+            CALL    WAIT_27T 
+            IN      B,(C) ; let's drop the first response
+            CALL    WAIT_27T 
+            CALL    WAIT_27T 
+            OUT     (C),A 
+            CALL    WAIT_27T 
+
+DS_WAIT_LOOP:        
+            CALL    WAIT_39T 
+            IN      A,(C) 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,DS_WAIT_LOOP 
+            CP      RETVAL_DATA_RECEIVED 
+            JR      z,CHAR_SENT 
+            OR      A 
+            RET      
+CHAR_SENT:           
+            XOR     A 
+            RET      
+
+
+
+
+
+
+
+
+

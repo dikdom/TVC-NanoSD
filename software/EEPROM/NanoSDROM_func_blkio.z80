@@ -1,0 +1,141 @@
+BLOCKIO_HANDLER:     
+            JP      p,BLOCK_OUT 
+            CALL    OPEN_FILE_4READ_CHECK 
+            RET     z 
+            LD      A,(BORDER_COLOR) ; 13T
+            LD      H,2 ; 7T
+            AND     1 ; 7T
+            JR      z,STORE_STRIPE ;12T
+            LD      H,0 ; 7T
+STORE_STRIPE:        
+            EX      AF,AF' 
+            LD      A,H 
+            EX      AF,AF' 
+BLOCKREAD_LOOP:      
+            PUSH    BC 
+            PUSH    DE 
+            EX      AF,AF' 
+            LD      B,A 
+            EX      AF,AF' 
+            CALL    CHARGET_NOCHECK 
+            POP     DE 
+            JR      nz,CHARGET_FAILED 
+            LD      A,C 
+            LD      (DE),A 
+            INC     DE 
+            POP     BC 
+            DEC     BC 
+            LD      A,B 
+            OR      C 
+            JR      nz,BLOCKREAD_LOOP 
+            XOR     A 
+            RET      
+CHARGET_FAILED:      
+            POP     BC 
+            PUSH    DE 
+            PUSH    BC 
+            LD      c,a 
+            EX      AF,AF' 
+            CALL    print_hex_byte 
+            LD      hl,BC_STR 
+            CALL    PRINT_STRING 
+            POP     hl ; BC in HL
+            PUSH    HL 
+            CALL    print_16bit_decimal_number 
+            LD      hl,DE_STR 
+            CALL    PRINT_STRING 
+            POP     BC 
+            POP     HL 
+            CALL    print_16bit_decimal_number 
+            EX      DE,HL 
+            EX      AF,AF' 
+            OR      A 
+            RET      
+
+; ==========================================================
+
+BLOCK_OUT:           
+            CALL    OPEN_FILE_4WRITE_CHECK 
+            RET     z 
+
+FULL_DATA_SEND_CYCLE:  
+            PUSH    DE 
+            PUSH    BC 
+INNER_DATA_SEND_CYCLE:  
+            PUSH    DE 
+            LD      H,B 
+            LD      L,C ; BC -> HL
+            LD      DE,64 
+            XOR     A ; clear C
+            SBC     HL,DE ; HL=BC-64
+            POP     DE 
+            JR      c,LAST_BLOCK 
+            LD      B,64 
+            JR      SKIP_BLOCK_SET 
+LAST_BLOCK:          
+            LD      HL,$0000 ; no more data to send
+            LD      B,C ; BC is less than 64, C contains the remaining bytes
+            LD      A,B 
+            OR      A ; is there anything at all?
+            JR      z,WRITE_CYCLE_OK ; no need to send anything!
+SKIP_BLOCK_SET:      
+            LD      a,(BORDER_COLOR) 
+            ADD     A,4 
+            OUT     ($00),A 
+
+            LD      C,(IX+0) 
+            LD      A,SDISK_NANO_CMD_PUTDATA 
+            OUT     (C),A ; send Command
+            CALL    WAIT_39T 
+            OUT     (C),B ; size of BLOCK
+            CALL    WAIT_39T 
+            IN      A,(C) ; let's drop the first response
+            CALL    WAIT_39T 
+SEND_SMALL_BLOCK_LOOP:  
+            LD      A,(DE) ; 7T
+            OUT     (C),A 
+            INC     DE ; 6T
+            CALL    WAIT_27T 
+            DJNZ    SEND_SMALL_BLOCK_LOOP ; 13T
+            LD      A,(BORDER_COLOR) 
+            SUB     4 
+            OUT     ($00),A 
+WAIT_FOR_RESPONSE:   
+            CALL    WAIT_27T 
+            IN      A,(C) 
+            CP      RETVAL_DATA_RECEIVED 
+            JR      z,WRITE_CYCLE_OK 
+            CP      RETVAL_DATA_NOT_READY_YET 
+            JR      z,WAIT_FOR_RESPONSE 
+;            CP RETVAL_DATA_FAILED_TO_RECEIVE
+;            jr z,WRITE_CYCLE_FAILED
+WRITE_CYCLE_FAILED:  
+            POP     BC ; drop it
+            LD      b,h 
+            LD      c,l 
+            PUSH    AF 
+            LD      a,(BORDER_COLOR) 
+            OUT     ($00),A 
+            POP     AF 
+            OR      A 
+            POP     DE 
+            RET      
+WRITE_CYCLE_OK:      
+            LD      b,h 
+            LD      c,l 
+            LD      a,h 
+            OR      l 
+            JR      nz,INNER_DATA_SEND_CYCLE ; bytes to send? yes->JUMP
+            LD      a,(BORDER_COLOR) 
+            OUT     ($00),A 
+            XOR     A 
+            POP     BC 
+            POP     DE 
+            RET      
+
+
+DE_STR:              
+            .PSTR   "\r\nDE: " 
+BC_STR:              
+            .PSTR   "\r\nBC: " 
+
