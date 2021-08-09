@@ -3,7 +3,7 @@ A microSD card handler IO card for the Videoton TV Computer.
 Egy microSD kártya kezelő IO kártya a Videoton TV Computer számára.
 
 ## License
-BSD License
+BSD 3-Clause License
 
 ## Description
 This is a simple and cheap microSD handler card for the Hunarian 8 bit TVC computer. It emulates the cassette interface so it can load
